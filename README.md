@@ -1,0 +1,276 @@
+# camera-fov-charuco
+
+**English** · [Tiếng Việt](#tiếng-việt)
+
+Measure a camera's field of view (FOV) and intrinsics (K, distortion D) with a
+ChArUco board, **and report how far the numbers can be trusted**.
+
+Computing a calibration is easy (OpenCV does it). Knowing its real error is not:
+a calibration readily returns a nice number with a small error bar where both are
+wrong. This tool is built around that problem.
+
+## What makes it different
+
+- **Honest error bars.** OpenCV's `std_intrinsics` assumes independent points and
+  was measured here to be **~10× too optimistic** (reported ~0.1°, while re-fitting
+  on image subsets moved the FOV by up to 3.2°). The tool instead reports a
+  **per-image bootstrap** spread. Checked on 3 independent 720p sessions: bootstrap
+  predicted 0.908°, the actual spread between sessions was 0.895° (1.4 % apart).
+- **Checked against an external reference.** Laptop webcam, 3 sessions:
+
+  | | measured | manufacturer | difference |
+  |---|---|---|---|
+  | Horizontal FOV | 72.86 ± 0.52° | 72.55° | +0.31° (0.59σ) |
+  | Diagonal FOV (pinhole) | 80.41 ± 0.33° | 80.2° | +0.21° (0.65σ) |
+
+- **Compares like with like.** Real-ray FOV (with distortion) and the symmetric
+  pinhole FOV that datasheets usually quote differ by ~1°. Comparing the wrong pair
+  gave 1.27σ; the right pair gave 0.65σ. Both are reported.
+- **Immutable sessions.** Every capture stores raw frames, detected corners, board
+  hash, code hash and camera state, so any stage can be changed and re-run on the
+  exact same data.
+- **Auto-capture that understands pose.** Stillness is measured on the *same
+  corner IDs* between frames; pose change is decomposed into translation / scale /
+  rotation / non-similar parts; sharpness is a two-direction gradient per corner,
+  normalised by local contrast (a single Laplacian number misses one-directional
+  blur).
+- **`validated` is always `false`.** The program measures precision, not accuracy.
+  Only an independent reference, supplied by a person, can establish accuracy.
+
+Full design notes, rejected alternatives and open issues are in
+[`THIET_KE.md`](THIET_KE.md) (Vietnamese).
+
+## Install
+
+```powershell
+py -3.14 -m pip install -r requirements.txt
+py -3.14 -c "import cv2; print(cv2.__version__, hasattr(cv2,'aruco'))"
+```
+
+Requires `opencv-contrib-python` 4.13 (ArUco module).
+
+## Print the board
+
+A4 and A3 boards are included (`bang_charuco_A4.pdf`, `bang_charuco_A3.pdf`).
+Regenerate with `py -3.14 tao_bang.py --kho a4`. The `.pdf`, `.png` and `.yaml`
+must come from the same run.
+
+Print at **100 %** (no "fit to page"), glue **flat** on rigid card, matte paper.
+Uniform printer scaling is harmless: FOV does not depend on the board's absolute
+size. Only different horizontal and vertical scaling breaks fx/fy.
+
+## Capture
+
+```powershell
+.\run_fov.ps1 capture --camera 0 --name my_webcam --width 1280 --height 720
+```
+
+Move the board to a new pose and **hold still ~0.4 s**. The tool keeps the
+sharpest frame and asks for a new pose. At 40 frames it analyses automatically.
+
+`Q` cancel (data kept, no solve) · `Enter` solve now · `Space` force-save (marked
+`forced`, excluded from the solve).
+
+For a good result, cover the whole frame, **especially the four corners**, and
+**tilt the board 20–45° in several directions**. Without tilt, focal length and
+distortion can trade off against each other.
+
+| Flag | Default | |
+|---|---|---|
+| `--camera N` | 0 | index may change after re-plugging |
+| `--width/--height` | 1920/1080 | FOV belongs to a (camera, mode) pair |
+| `--target N` | 40 | frames to collect |
+| `--bootstrap N` | 10 | bootstrap resamples, `0` = off |
+| `--freeze-focus 0` | on | turn off for fixed-focus webcams |
+| `--board` | `bang_calib_A4.yaml` | use `bang_calib.yaml` for A3 |
+
+## Re-analyse
+
+```powershell
+.\run_fov.ps1 analyze sessions\<id> [--redetect|--compare-models|--fix-principal|--k3]
+.\run_fov.ps1 compare sessions\<id1>\runs\<r1>\result.json sessions\<id2>\runs\<r2>\result.json
+```
+
+Each `analyze` creates a new run and never overwrites.
+
+## Output
+
+```
+FOV ngang 72.739 +/- 0.947° | dọc 44.889 +/- 0.583°
+trạng thái: observations=True solved=True internal_check=True validated=False accepted=False
+```
+
+(`ngang` = horizontal, `dọc` = vertical.) `+/-` is the bootstrap error. Do not use
+`std_intrinsics` from `result.json`. **Low RMS does not mean correct**: a set of
+near-parallel views gives excellent RMS with a wrong focal length.
+
+## Tests
+
+```powershell
+py -3.14 tests\test_fov.py
+```
+
+9 tests cover the numerical core. They were checked to fail when the FOV
+computation is deliberately biased by 2 %. `camera.py` and `stability()` are not
+yet covered.
+
+## Layout
+
+```
+do_fov.py          CLI: capture / analyze / compare
+run_fov.ps1        launcher
+tao_bang.py        board generator: .pdf + .png + .yaml
+fov_tool/
+  board.py         board config, board + detector
+  camera.py        open camera, record control state
+  observations.py  corner detection, quality, motion / pose change
+  acquisition.py   auto-capture state machine
+  session.py       immutable sessions and runs
+  calibration.py   fit, hold-out set, coverage, bootstrap, report
+  geometry.py      pixel <-> ray, FOV, distortion-map validity
+  ui.py            window drawing
+```
+
+Console messages and some file names are in Vietnamese.
+
+## License
+
+MIT
+
+---
+
+## Tiếng Việt
+
+Công cụ đo FOV và hiệu chuẩn camera (K, D) bằng bảng ChArUco, **kèm sai số thật**.
+Mỗi lần chụp lưu thành một **phiên bất biến** (ảnh gốc + toạ độ góc + trạng thái
+camera) nên phân tích lại được mà không phải chụp lại.
+
+Vì sao thiết kế như vậy, đã loại phương án nào, còn nợ gì: [`THIET_KE.md`](THIET_KE.md).
+
+### Cài
+
+```powershell
+py -3.14 -m pip install -r requirements.txt
+py -3.14 -c "import cv2; print(cv2.__version__, hasattr(cv2,'aruco'))"
+```
+
+### In bảng
+
+Bảng A4/A3 đã có sẵn. In lại hoặc đổi khổ: `py -3.14 tao_bang.py --kho a4`
+
+Sinh ba file đi kèm nhau (`.pdf` bản in, `.png` xem nhanh, `.yaml` chương trình
+đọc) — **phải cùng một lần sinh**, lệch nhau thì số đo sai mà không có gì báo.
+
+In **100 %** (tắt "Fit to page"), dán **phẳng** lên bìa cứng, giấy **mờ**. Máy in
+thu nhỏ đều cả hai chiều thì không sao — thang đo không đi vào K. Chỉ in lại khi
+tỉ lệ ngang khác tỉ lệ dọc.
+
+### Chụp
+
+```powershell
+.\run_fov.ps1 capture --camera 0 --name my_webcam --width 1280 --height 720
+```
+
+Đổi tư thế bảng rồi **giữ yên ~0,4 giây**; chương trình tự chọn khung nét nhất
+rồi đòi đổi tư thế mới. Đủ 40 ảnh thì tự phân tích.
+
+`Q` hủy (giữ dữ liệu, không tính) · `Enter` tính ngay · `Space` lưu cưỡng bức,
+đánh dấu `forced` và **bị loại khỏi phép tính**.
+
+Chụp thế nào cho tốt: đưa bảng khắp khung **nhất là bốn góc**; **nghiêng 20–45°
+theo nhiều hướng** (quan trọng nhất — thiếu thì tiêu cự và hệ số méo đổi chỗ cho
+nhau được); đưa gần cho bảng chiếm phần lớn khung.
+
+| Cờ | Mặc định | |
+|---|---|---|
+| `--camera N` | 0 | chỉ số đổi sau mỗi lần cắm lại |
+| `--width/--height` | 1920/1080 | **FOV thuộc về cặp (camera, chế độ)** — đổi chế độ là phép đo khác |
+| `--target N` | 40 | số ảnh thì dừng |
+| `--bootstrap N` | 10 | số lần đo sai số thật; `0` = tắt |
+| `--freeze-focus 0` | bật | tắt nếu webcam fixed-focus |
+| `--board` | `bang_calib_A4.yaml` | dùng A3 thì trỏ `bang_calib.yaml` |
+
+### Phân tích lại
+
+```powershell
+.\run_fov.ps1 analyze sessions\<id> [--redetect|--compare-models|--fix-principal|--k3]
+.\run_fov.ps1 compare sessions\<id1>\runs\<r1>\result.json sessions\<id2>\runs\<r2>\result.json
+```
+
+| Cờ | Dùng để |
+|---|---|
+| `--redetect` | nhận diện lại góc từ PNG — tách lỗi "phát hiện góc" khỏi lỗi "fit" |
+| `--compare-models` | k3 khoá vs k3 tự do trên **cùng tập giữ riêng** |
+| `--fix-principal` | ghim tâm quang ở tâm ảnh — **giả định chẩn đoán**, không phải phép đo |
+
+Mỗi lần `analyze` tạo run mới, không ghi đè.
+
+### Đọc kết quả
+
+```
+FOV ngang 72.739 +/- 0.947° | dọc 44.889 +/- 0.583°
+trạng thái: observations=True solved=True internal_check=True validated=False accepted=False
+```
+
+**`+/-` là sai số thật** (bootstrap trên chính bộ ảnh đó). Đừng dùng
+`std_intrinsics` trong `result.json` — nó lạc quan khoảng **10 lần**.
+
+| Trạng thái | Nghĩa |
+|---|---|
+| `observations_sufficient` | ≥ 20 ảnh và ≥ 28/40 ô lưới có ≥ 2 lượt quan sát độc lập |
+| `solved` | nghiệm hữu hạn **và** ánh xạ méo hợp lệ |
+| `internal_validation_completed` | đã chấm trên tập giữ riêng với K/D cố định |
+| `validated`, `accepted` | **luôn `false`** — tự kiểm không chứng minh được độ đúng |
+
+**RMS thấp không có nghĩa là đo đúng**: bộ ảnh quá phẳng cho RMS rất đẹp mà tiêu
+cự sai nhiều. Chương trình chỉ đo được **độ chụm**; muốn biết **độ đúng** phải có
+mốc độc lập (thông số hãng, hoặc phép đo góc bằng cách khác).
+
+Đối chiếu thông số hãng thì **phải so cùng định nghĩa**: `fov_raw` là góc giữa
+các tia thật (có méo), hãng thường công bố **pinhole đối xứng** — lệch nhau cỡ
+**1°**, đủ để kết luận sai. Dùng `fov_pinhole_reference` trong `result.json`.
+
+### Sự cố
+
+| Hiện tượng | Nguyên nhân |
+|---|---|
+| Cửa sổ hiện chữ cụt (`Gi bng yn`) | có chuỗi **có dấu** lọt vào phần vẽ; `cv2.putText` chỉ vẽ ASCII |
+| `.ps1`: `string is missing the terminator` | file UTF-8 **không BOM** + chữ có dấu; PowerShell 5.1 đọc bằng ANSI |
+| `cv2 has no attribute 'CAP_MSMF'` / `__version__` | `PYTHONPATH` trỏ vào thư mục thư viện hỏng → `cv2` thành package rỗng. Xoá biến đó |
+| Không mở được camera | chỉ số đổi sau khi cắm lại; thử `--camera 1`, `--backend dshow`; hoặc app khác đang chiếm |
+| `"guaranteed": false` trong manifest | driver **không cho khoá** autofocus. Giữ khoảng cách bảng–camera gần như không đổi, và đo ≥ 2 phiên rồi `compare` |
+| Chụp mãi không lưu ảnh | đọc dòng trạng thái trên cửa sổ — nó nói đang vướng cổng nào |
+
+### Kiểm thử
+
+```powershell
+py -3.14 tests\test_fov.py
+```
+
+Không dùng `-m unittest tests.test_fov` (`tests\` không có `__init__.py`).
+9 test phủ phần lõi tính toán, đã thử cố ý làm lệch FOV 2 % thì test báo lỗi.
+**Chưa phủ `camera.py` và `stability()`** — nên 9/9 đạt không đồng nghĩa chương
+trình chạy được.
+
+### Cấu trúc
+
+```
+do_fov.py          CLI: capture / analyze / compare
+run_fov.ps1        launcher (gọi py -3.14 do_fov.py)
+tao_bang.py        sinh bảng: .pdf + .png + .yaml
+fov_tool/
+  board.py         đọc cấu hình bảng, tạo board + detector
+  camera.py        mở camera, ghi nhận trạng thái điều khiển
+  observations.py  phát hiện góc, chấm chất lượng, đo chuyển động / đổi tư thế
+  acquisition.py   máy trạng thái tự chụp
+  session.py       ghi/đọc phiên bất biến, tạo run
+  calibration.py   fit, tập giữ riêng, độ phủ, bootstrap sai số, xuất báo cáo
+  geometry.py      pixel ↔ tia, FOV, kiểm tra ánh xạ méo
+  ui.py            vẽ cửa sổ
+sessions/<id>/     manifest.json · board.yaml · frames/ · observations.jsonl
+                   runs/<run_id>/result.json
+```
+
+### Giấy phép
+
+MIT

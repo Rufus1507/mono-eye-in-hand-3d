@@ -1,0 +1,22 @@
+bang:
+  kieu: charuco
+  o_ngang: 11
+  o_doc: 7
+  tu_dien: 4X4_50
+  canh_o: 1.0
+  ti_le_marker_tren_o: 0.726832
+  so_goc_trong: 60
+  so_marker: 38
+  opencv_sinh: 4.13.0
+ban_in:
+  kho: A3 ngang
+  dpi: 300
+  canh_o_mm: 33.02
+  marker_mm: 24.0
+kiem_in:
+  ca_bang_ngang_mm: 363.22
+  ca_bang_doc_mm: 231.14
+  thuoc_ngang_mm: 350.0
+  thuoc_doc_mm: 200.0
+  do_duoc_ngang_mm: null
+  do_duoc_doc_mm: null
