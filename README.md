@@ -80,9 +80,39 @@ distortion can trade off against each other.
 | `--camera N` | 0 | index may change after re-plugging |
 | `--width/--height` | 1920/1080 | FOV belongs to a (camera, mode) pair |
 | `--target N` | 40 | frames to collect |
-| `--bootstrap N` | 10 | bootstrap resamples, `0` = off |
+| `--bootstrap N` | 10 (`import`: 100) | bootstrap resamples, `0` = off. Use 100 when you report the ± figure: with 10 the ± itself varied 0.85–2.06° on one image set |
 | `--freeze-focus 0` | on | turn off for fixed-focus webcams |
 | `--board` | `bang_calib_A4.yaml` | use `bang_calib.yaml` for A3 |
+
+## Import photos or a video
+
+For a camera you cannot plug in, e.g. photos someone else took (see
+[`PHOTO_GUIDE.md`](PHOTO_GUIDE.md)):
+
+```powershell
+.\run_fov.ps1 import path\to\photos --name client_cam
+.\run_fov.ps1 import path\to\clip.mp4 --name client_cam
+```
+
+The photos become a normal session (same format, same `analyze`), and every
+rejected file is listed in `manifest.json` with a reason:
+
+| Reason | Why |
+|---|---|
+| `size_mismatch` | not the most common resolution: another camera mode |
+| `different_camera_or_zoom` | EXIF make/model/focal length/digital zoom differs: phones switch lenses when zooming |
+| `board_not_found` | fewer than 12 corners |
+| `blurry` | same two-direction sharpness gate as capture |
+| `same_pose` | same pose as **any** earlier accepted photo; near-duplicates make the bootstrap error too small |
+
+Photos are read in **sensor orientation** (EXIF rotation ignored). Sharpness is
+scored on a copy scaled to a 1920 px long side, because the gate was set on
+webcams: without it, sharp 12 MP phone photos are rejected as blurry. Corners
+and the fit always use the full image. A video goes through the same
+auto-capture state machine as a live camera.
+
+Checked on a stored 40-frame 1080p session: importing its frames gives the
+same corners, bit for bit, as the live capture, and the same K and D.
 
 ## Re-analyse
 
@@ -110,21 +140,24 @@ near-parallel views gives excellent RMS with a wrong focal length.
 py -3.14 tests\test_fov.py
 ```
 
-9 tests cover the numerical core. They were checked to fail when the FOV
-computation is deliberately biased by 2 %. `camera.py` and `stability()` are not
+18 tests. The numerical-core tests were checked to fail when the FOV
+computation is deliberately biased by 2 %; each import gate was checked to fail
+its test when the gate is switched off. `camera.py` and `stability()` are not
 yet covered.
 
 ## Layout
 
 ```
-do_fov.py          CLI: capture / analyze / compare
+do_fov.py          CLI: capture / import / analyze / compare
 run_fov.ps1        launcher
 tao_bang.py        board generator: .pdf + .png + .yaml
+PHOTO_GUIDE.md     how to take photos for `import`
 fov_tool/
   board.py         board config, board + detector
   camera.py        open camera, record control state
   observations.py  corner detection, quality, motion / pose change
   acquisition.py   auto-capture state machine
+  importing.py     photos / video -> session, with rejection reasons
   session.py       immutable sessions and runs
   calibration.py   fit, hold-out set, coverage, bootstrap, report
   geometry.py      pixel <-> ray, FOV, distortion-map validity
@@ -186,9 +219,38 @@ nhau được); đưa gần cho bảng chiếm phần lớn khung.
 | `--camera N` | 0 | chỉ số đổi sau mỗi lần cắm lại |
 | `--width/--height` | 1920/1080 | **FOV thuộc về cặp (camera, chế độ)** — đổi chế độ là phép đo khác |
 | `--target N` | 40 | số ảnh thì dừng |
-| `--bootstrap N` | 10 | số lần đo sai số thật; `0` = tắt |
+| `--bootstrap N` | 10 (`import`: 100) | số lần đo sai số thật; `0` = tắt. Báo cáo con số ± thì dùng 100: với 10 lần, chính con số ± dao động 0,85–2,06° trên cùng một bộ ảnh |
 | `--freeze-focus 0` | bật | tắt nếu webcam fixed-focus |
 | `--board` | `bang_calib_A4.yaml` | dùng A3 thì trỏ `bang_calib.yaml` |
+
+### Nhập ảnh hoặc video
+
+Dùng khi không cắm được camera vào máy, ví dụ ảnh người khác chụp theo
+[`PHOTO_GUIDE.md`](PHOTO_GUIDE.md):
+
+```powershell
+.\run_fov.ps1 import duong\dan\thu_muc_anh --name cam_khach
+.\run_fov.ps1 import duong\dan\clip.mp4 --name cam_khach
+```
+
+Ảnh được chuyển thành một phiên bình thường (cùng định dạng, `analyze` như cũ).
+Mỗi tệp bị loại đều ghi lý do trong `manifest.json`:
+
+| Lý do | Vì sao |
+|---|---|
+| `size_mismatch` | khác độ phân giải chiếm đa số: là chế độ camera khác |
+| `different_camera_or_zoom` | EXIF khác hãng/model/tiêu cự/zoom số: điện thoại tự đổi ống kính khi zoom |
+| `board_not_found` | dưới 12 góc |
+| `blurry` | cùng cổng độ nét hai hướng như khi tự chụp |
+| `same_pose` | trùng tư thế với **bất kỳ** ảnh đã nhận nào; ảnh gần trùng làm bootstrap báo sai số quá nhỏ |
+
+Ảnh đọc theo **hướng cảm biến** (bỏ qua thẻ xoay EXIF). Điểm nét chấm trên bản thu
+về cạnh dài 1920 px, vì ngưỡng được đặt trên webcam: không thu thì ảnh điện thoại
+12 MP nét vẫn bị gọi là mờ. Tìm góc và hiệu chuẩn luôn dùng ảnh gốc. Video đi qua
+đúng máy trạng thái tự chụp như camera trực tiếp.
+
+Đã kiểm trên một phiên 1080p 40 ảnh có sẵn: nhập lại ảnh của nó cho tọa độ góc
+trùng từng bit với lúc chụp trực tiếp, và cùng K, D.
 
 ### Phân tích lại
 
@@ -248,21 +310,24 @@ py -3.14 tests\test_fov.py
 ```
 
 Không dùng `-m unittest tests.test_fov` (`tests\` không có `__init__.py`).
-9 test phủ phần lõi tính toán, đã thử cố ý làm lệch FOV 2 % thì test báo lỗi.
-**Chưa phủ `camera.py` và `stability()`** — nên 9/9 đạt không đồng nghĩa chương
+18 test. Test phần lõi tính toán đã thử cố ý làm lệch FOV 2 % thì báo lỗi; mỗi
+cổng loại ảnh của `import` đã thử tắt đi thì test của nó báo lỗi.
+**Chưa phủ `camera.py` và `stability()`** — nên 18/18 đạt không đồng nghĩa chương
 trình chạy được.
 
 ### Cấu trúc
 
 ```
-do_fov.py          CLI: capture / analyze / compare
+do_fov.py          CLI: capture / import / analyze / compare
 run_fov.ps1        launcher (gọi py -3.14 do_fov.py)
 tao_bang.py        sinh bảng: .pdf + .png + .yaml
+PHOTO_GUIDE.md     hướng dẫn chụp ảnh cho `import` (tiếng Anh, gửi khách)
 fov_tool/
   board.py         đọc cấu hình bảng, tạo board + detector
   camera.py        mở camera, ghi nhận trạng thái điều khiển
   observations.py  phát hiện góc, chấm chất lượng, đo chuyển động / đổi tư thế
   acquisition.py   máy trạng thái tự chụp
+  importing.py     ảnh / video -> phiên, kèm lý do loại
   session.py       ghi/đọc phiên bất biến, tạo run
   calibration.py   fit, tập giữ riêng, độ phủ, bootstrap sai số, xuất báo cáo
   geometry.py      pixel ↔ tia, FOV, kiểm tra ánh xạ méo

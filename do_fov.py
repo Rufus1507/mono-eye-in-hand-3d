@@ -107,6 +107,61 @@ def capture(args):
     return 0 if report["status"]["solved"] and report["status"]["observations_sufficient"] else 2
 
 
+def import_cmd(args):
+    from fov_tool.importing import collect_inputs, import_images, import_video
+    spec, board, detector = load_board(args.board)
+    images, videos, ignored = collect_inputs(args.inputs)
+    if images and videos or len(videos) > 1:
+        print("Mỗi phiên chỉ nhận MỘT loại nguồn: một thư mục ảnh, hoặc một video. "
+              "Nhiều nguồn có thể là nhiều chế độ camera; nhập riêng từng cái.")
+        return 2
+    if not images and not videos:
+        print("Không có ảnh/video nào được hỗ trợ trong đầu vào.")
+        return 2
+    if videos:
+        kind = "video"
+        result = import_video(videos[0], detector, args.min_corners, args.stable_ms,
+                              args.motion_median, args.motion_p90, args.min_quality,
+                              args.buffer, args.video_step)
+    else:
+        kind = "images"
+        result = import_images(images, detector, args.min_corners, args.min_quality)
+    counts = result.counts()
+    print(f"Nhập {kind}: {len(images) if images else result.frames_read} "
+          f"{'ảnh' if images else 'khung'}, kích thước dùng {result.size}")
+    for name, n in sorted(counts.items()):
+        print(f"  {name}: {n}")
+    for rec in result.records:
+        if rec["decision"] not in ("accepted",) and kind == "images":
+            print(f"    loại {Path(rec['file']).name}: {rec['decision']}"
+                  + (f" ({rec['detail']})" if rec.get("detail") else ""))
+    if ignored:
+        print(f"  bỏ qua {len(ignored)} tệp không phải ảnh/video")
+    if result.size is None:
+        print("Không đọc được nguồn nào.")
+        return 2
+    width, height = result.size
+    writer = SessionWriter(args.sessions, spec,
+                           {"source": f"import_{kind}", "inputs": [str(p) for p in args.inputs]},
+                           {"width": width, "height": height}, {"name": args.name})
+    writer.manifest["import"] = {"kind": kind, "records": result.records,
+                                 "ignored": [str(p) for p in ignored],
+                                 "frames_read": result.frames_read,
+                                 "settings": {"min_corners": args.min_corners,
+                                              "min_quality": args.min_quality,
+                                              "video_step": args.video_step}}
+    for gray, obs, rec in result.accepted:
+        rec["session_image"] = writer.add(gray, obs).relative_to(writer.path).as_posix()
+    writer.close("imported")
+    print(f"Phiên: {writer.path}")
+    if len(result.accepted) < 6:
+        print(f"Chỉ {len(result.accepted)} ảnh đạt; cần ít nhất 6 để tính. Phiên vẫn được lưu.")
+        return 2
+    report, run_dir = analyze(writer.path, board, args.k3, bootstrap=args.bootstrap)
+    print_report(report, run_dir)
+    return 0 if report["status"]["solved"] and report["status"]["observations_sufficient"] else 2
+
+
 def analyze_cmd(args):
     board_path = args.session.resolve() / "board.yaml"
     _, board, detector = load_board(board_path)
@@ -211,6 +266,22 @@ def parser():
                    help="số lần bootstrap để đo SAI SỐ THẬT của phép đo "
                         "(0 = tắt; khi tắt thì báo cáo không có độ tản)")
     c.set_defaults(func=capture)
+    m = sub.add_parser("import", help="nhập ảnh/video người khác chụp thành một phiên rồi phân tích")
+    m.add_argument("inputs", type=Path, nargs="+", help="thư mục ảnh, các tệp ảnh, hoặc một video")
+    m.add_argument("--name", default="imported")
+    m.add_argument("--board", type=Path, default=ROOT/"bang_calib_A4.yaml")
+    m.add_argument("--sessions", type=Path, default=ROOT/"sessions")
+    m.add_argument("--min-corners", type=int, default=12); m.add_argument("--min-quality", type=float, default=5.)
+    m.add_argument("--stable-ms", type=int, default=400, help="chỉ video")
+    m.add_argument("--motion-median", type=float, default=.8, help="chỉ video")
+    m.add_argument("--motion-p90", type=float, default=1.5, help="chỉ video")
+    m.add_argument("--buffer", type=int, default=20, help="chỉ video")
+    m.add_argument("--video-step", type=int, default=1, help="chỉ xét 1 trong N khung video")
+    m.add_argument("--k3", action="store_true")
+    m.add_argument("--bootstrap", type=int, default=100,
+                   help="số lần bootstrap để đo SAI SỐ THẬT (0 = tắt). Mặc định 100 vì 10 lần "
+                        "cho chính con số ± dao động 0.85–2.06° trên cùng một bộ ảnh (THIET_KE §5)")
+    m.set_defaults(func=import_cmd)
     a = sub.add_parser("analyze", help="phân tích lại một phiên đã lưu")
     a.add_argument("session", type=Path); a.add_argument("--k3", action="store_true")
     a.add_argument("--redetect", action="store_true", help="nhận diện lại từ PNG thay vì dùng tọa độ đã lưu")

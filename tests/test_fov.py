@@ -150,4 +150,123 @@ class CliFlowTests(unittest.TestCase):
             self.assertEqual(json.loads(manifests[0].read_text(encoding="utf-8"))["status"], "canceled")
 
 
+def board_view(quad, size=(1280, 720)):
+    """Anh gia lap: trang bang A4 chieu phoi canh vao tu giac quad (TL, TR, BR, BL)."""
+    page = cv2.imread(str(ROOT / "bang_charuco_A4.png"))
+    h, w = page.shape[:2]
+    H = cv2.getPerspectiveTransform(np.float32([[0, 0], [w, 0], [w, h], [0, h]]), np.float32(quad))
+    return cv2.warpPerspective(page, H, size, flags=cv2.INTER_AREA, borderValue=(255, 255, 255))
+
+
+VIEWS = [[[100, 60], [900, 90], [880, 650], [120, 620]],
+         [[350, 40], [1200, 60], [1150, 690], [380, 660]],
+         [[60, 120], [700, 40], [760, 700], [40, 560]],
+         [[500, 100], [1240, 180], [1180, 560], [560, 690]],
+         [[200, 200], [1000, 150], [1050, 700], [150, 650]],
+         [[20, 20], [640, 60], [600, 420], [60, 380]],
+         [[640, 300], [1260, 330], [1240, 710], [660, 700]]]
+
+
+class ImportTests(unittest.TestCase):
+    """Moi cong loai anh co mot ca da biet la hong; da kiem: tat cong thi test do."""
+
+    def setUp(self):
+        from fov_tool import importing
+        self.importing = importing
+        _, _, self.detector = load_board(ROOT / "bang_calib_A4.yaml")
+        self.td = tempfile.TemporaryDirectory(); self.dir = Path(self.td.name)
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def write(self, name, image, exif=None):
+        path = self.dir / name
+        if exif is None:
+            cv2.imwrite(str(path), image)
+        else:
+            from PIL import Image
+            Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).save(path, exif=exif, quality=95)
+        return path
+
+    def decisions(self, paths):
+        result = self.importing.import_images(paths, self.detector)
+        return {Path(r["file"]).name: r["decision"] for r in result.records}, result
+
+    def test_clean_views_all_accepted(self):
+        paths = [self.write(f"v{i}.png", board_view(q)) for i, q in enumerate(VIEWS)]
+        got, result = self.decisions(paths)
+        self.assertEqual(set(got.values()), {"accepted"}, got)
+        self.assertEqual(result.size, (1280, 720))
+
+    def test_minority_size_rejected(self):
+        paths = [self.write(f"v{i}.png", board_view(q)) for i, q in enumerate(VIEWS[:4])]
+        paths.append(self.write("small.png", board_view(VIEWS[4], (960, 540))))
+        got, result = self.decisions(paths)
+        self.assertEqual(got["small.png"], "size_mismatch")
+        self.assertEqual(result.size, (1280, 720))
+
+    def test_blurred_photo_rejected(self):
+        blurred = cv2.filter2D(board_view(VIEWS[1]), -1, np.ones((1, 7), np.float32) / 7)
+        paths = [self.write("v0.png", board_view(VIEWS[0])), self.write("blur.png", blurred)]
+        got, _ = self.decisions(paths)
+        self.assertEqual(got["blur.png"], "blurry")
+
+    def test_high_resolution_sharp_photo_not_called_blurry(self):
+        # CUNG noi dung anh 1920 px, chi nhieu diem anh hon x3 (nhu anh dien thoai):
+        # diem net phai giu nguyen. Khong chuan hoa thi anh net bi goi la mo.
+        view = lambda q: board_view(np.asarray(q) * 1.5, (1920, 1080))
+        up = lambda img: cv2.resize(img, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        blurred = cv2.filter2D(view(VIEWS[1]), -1, np.ones((1, 9), np.float32) / 9)
+        paths = [self.write("sharp_hi.png", up(view(VIEWS[0]))), self.write("blur_hi.png", up(blurred))]
+        got, result = self.decisions(paths)
+        self.assertEqual(result.size, (5760, 3240))
+        self.assertEqual(got, {"sharp_hi.png": "accepted", "blur_hi.png": "blurry"})
+
+    def test_repeated_pose_rejected_even_if_not_consecutive(self):
+        paths = [self.write("a.png", board_view(VIEWS[0])), self.write("b.png", board_view(VIEWS[1])),
+                 self.write("c.png", board_view(VIEWS[0]))]
+        got, _ = self.decisions(paths)
+        self.assertEqual(got["c.png"], "same_pose")
+
+    def test_views_without_common_corners_are_different_poses(self):
+        # Loi da gap tren phien that: pose_change tra changed=False khi thieu goc chung.
+        grid = np.array([[x, y] for y in range(3) for x in range(5)], np.float32) * 40 + 100
+        a = observation(grid, ids=np.arange(15))
+        b = observation(grid, ids=np.arange(40, 55))
+        self.assertFalse(self.importing.same_pose(a, b))
+        self.assertTrue(self.importing.same_pose(a, observation(grid + .5, ids=np.arange(15))))
+
+    def test_different_lens_or_zoom_rejected(self):
+        from PIL import Image
+        def exif(focal):
+            e = Image.Exif(); e[0x010F] = "Phone"; e[0x0110] = "X1"
+            e.get_ifd(0x8769)[0x920A] = focal
+            return e
+        paths = [self.write(f"w{i}.jpg", board_view(q), exif(4.2)) for i, q in enumerate(VIEWS[:3])]
+        paths.append(self.write("tele.jpg", board_view(VIEWS[3]), exif(9.0)))
+        got, _ = self.decisions(paths)
+        self.assertEqual(got["tele.jpg"], "different_camera_or_zoom")
+        self.assertEqual([got[f"w{i}.jpg"] for i in range(3)], ["accepted"] * 3)
+
+    def test_exif_rotation_ignored(self):
+        from PIL import Image
+        e = Image.Exif(); e[0x0112] = 6   # "xoay 90 do khi hien thi"
+        path = self.write("rot.jpg", board_view(VIEWS[0]), e)
+        self.assertEqual(self.importing.read_gray(path).shape, (720, 1280))
+        self.assertEqual(self.importing.probe_image(path)["size"], (1280, 720))
+
+    def test_video_held_poses_become_frames(self):
+        path = self.dir / "clip.avi"
+        out = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30, (1280, 720))
+        self.assertTrue(out.isOpened())
+        for q in VIEWS[:3]:
+            frame = board_view(q)
+            for _ in range(20):   # giu 0.67 s > 400 ms
+                out.write(frame)
+        out.release()
+        result = self.importing.import_video(path, self.detector)
+        self.assertEqual(result.size, (1280, 720))
+        self.assertEqual(len(result.accepted), 3)
+
+
 if __name__ == "__main__": unittest.main()
