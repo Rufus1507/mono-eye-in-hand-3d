@@ -134,30 +134,55 @@ trạng thái: observations=True solved=True internal_check=True validated=False
 `std_intrinsics` from `result.json`. **Low RMS does not mean correct**: a set of
 near-parallel views gives excellent RMS with a wrong focal length.
 
+## Export for use elsewhere
+
+```powershell
+.\run_fov.ps1 export sessions\<id> --name "my camera" [--datasheet-hfov 72.55] [--datasheet-dfov 80.2]
+```
+
+Writes to `<run>/export/` (or `--out`):
+
+| File | |
+|---|---|
+| `camera.yaml` | `cv::FileStorage`: `camera_matrix`, `distortion_coefficients`, `image_width`, `image_height` |
+| `camera.json` | the same numbers plus FOV (real-ray, pinhole incl. diagonal) and bootstrap spread |
+| `report.html` | readable report, prints to PDF: FOV, warnings, K and D, coverage grid, every photo with its result |
+
+The report warns when a corner of the image has no board points (distortion
+there is extrapolated), when RMS is above 1 px, and when held-out error is much
+larger than fit error. It shows only file names, never paths from the sender's
+computer.
+
+`examples/undistort.py camera.yaml <image | folder | video>` removes distortion
+using only OpenCV and NumPy; it refuses images at another resolution.
+
 ## Tests
 
 ```powershell
 py -3.14 tests\test_fov.py
 ```
 
-18 tests. The numerical-core tests were checked to fail when the FOV
-computation is deliberately biased by 2 %; each import gate was checked to fail
-its test when the gate is switched off. `camera.py` and `stability()` are not
-yet covered.
+21 tests. The numerical-core tests were checked to fail when the FOV
+computation is deliberately biased by 2 %; each import gate and each export
+check was checked to fail its test when deliberately broken. `camera.py` and
+`stability()` are not yet covered.
 
 ## Layout
 
 ```
-do_fov.py          CLI: capture / import / analyze / compare
+do_fov.py          CLI: capture / import / analyze / export / compare
 run_fov.ps1        launcher
 tao_bang.py        board generator: .pdf + .png + .yaml
 PHOTO_GUIDE.md     how to take photos for `import`
+examples/
+  undistort.py     remove distortion with camera.yaml (OpenCV + NumPy only)
 fov_tool/
   board.py         board config, board + detector
   camera.py        open camera, record control state
   observations.py  corner detection, quality, motion / pose change
   acquisition.py   auto-capture state machine
   importing.py     photos / video -> session, with rejection reasons
+  export.py        camera.yaml, camera.json, report.html
   session.py       immutable sessions and runs
   calibration.py   fit, hold-out set, coverage, bootstrap, report
   geometry.py      pixel <-> ray, FOV, distortion-map validity
@@ -290,7 +315,29 @@ mốc độc lập (thông số hãng, hoặc phép đo góc bằng cách khác)
 
 Đối chiếu thông số hãng thì **phải so cùng định nghĩa**: `fov_raw` là góc giữa
 các tia thật (có méo), hãng thường công bố **pinhole đối xứng** — lệch nhau cỡ
-**1°**, đủ để kết luận sai. Dùng `fov_pinhole_reference` trong `result.json`.
+**1°**, đủ để kết luận sai. Dùng `fov_pinhole_reference` trong `result.json`,
+hoặc mục pinhole (có cả đường chéo) trong `camera.json` / `report.html` của `export`.
+
+### Xuất kết quả để dùng nơi khác
+
+```powershell
+.\run_fov.ps1 export sessions\<id> --name "ten camera" [--datasheet-hfov 72.55] [--datasheet-dfov 80.2]
+```
+
+Ghi vào `<run>/export/` (hoặc `--out`):
+
+| Tệp | |
+|---|---|
+| `camera.yaml` | `cv::FileStorage`: `camera_matrix`, `distortion_coefficients`, `image_width`, `image_height` |
+| `camera.json` | cùng số liệu, kèm FOV (tia thật, pinhole có đường chéo) và độ tản bootstrap |
+| `report.html` | báo cáo tiếng Anh, in ra PDF được: FOV, cảnh báo, K và D, lưới độ phủ, từng ảnh kèm kết quả |
+
+Báo cáo cảnh báo khi một góc ảnh không có điểm bảng (méo ở đó là ngoại suy), khi
+RMS trên 1 px, và khi sai số tập giữ riêng lớn hơn hẳn sai số fit. Chỉ ghi tên tệp,
+không bao giờ ghi đường dẫn trên máy người gửi.
+
+`examples/undistort.py camera.yaml <ảnh | thư mục | video>` khử méo, chỉ cần
+OpenCV và NumPy; từ chối ảnh khác độ phân giải đã hiệu chuẩn.
 
 ### Sự cố
 
@@ -310,24 +357,27 @@ py -3.14 tests\test_fov.py
 ```
 
 Không dùng `-m unittest tests.test_fov` (`tests\` không có `__init__.py`).
-18 test. Test phần lõi tính toán đã thử cố ý làm lệch FOV 2 % thì báo lỗi; mỗi
-cổng loại ảnh của `import` đã thử tắt đi thì test của nó báo lỗi.
-**Chưa phủ `camera.py` và `stability()`** — nên 18/18 đạt không đồng nghĩa chương
+21 test. Test phần lõi tính toán đã thử cố ý làm lệch FOV 2 % thì báo lỗi; mỗi
+cổng loại ảnh của `import` và mỗi phép kiểm của `export` đã thử làm hỏng thì test của nó báo lỗi.
+**Chưa phủ `camera.py` và `stability()`** — nên 21/21 đạt không đồng nghĩa chương
 trình chạy được.
 
 ### Cấu trúc
 
 ```
-do_fov.py          CLI: capture / import / analyze / compare
+do_fov.py          CLI: capture / import / analyze / export / compare
 run_fov.ps1        launcher (gọi py -3.14 do_fov.py)
 tao_bang.py        sinh bảng: .pdf + .png + .yaml
 PHOTO_GUIDE.md     hướng dẫn chụp ảnh cho `import` (tiếng Anh, gửi khách)
+examples/
+  undistort.py     khử méo bằng camera.yaml (chỉ cần OpenCV + NumPy)
 fov_tool/
   board.py         đọc cấu hình bảng, tạo board + detector
   camera.py        mở camera, ghi nhận trạng thái điều khiển
   observations.py  phát hiện góc, chấm chất lượng, đo chuyển động / đổi tư thế
   acquisition.py   máy trạng thái tự chụp
   importing.py     ảnh / video -> phiên, kèm lý do loại
+  export.py        camera.yaml, camera.json, report.html
   session.py       ghi/đọc phiên bất biến, tạo run
   calibration.py   fit, tập giữ riêng, độ phủ, bootstrap sai số, xuất báo cáo
   geometry.py      pixel ↔ tia, FOV, kiểm tra ánh xạ méo

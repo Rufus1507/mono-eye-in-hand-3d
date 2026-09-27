@@ -159,15 +159,35 @@ mọi cổng làm **sau**, và mọi ảnh bị loại đều ghi lý do vào ma
   được ngay (góc lệch 1.48 px).
 - Mỗi cổng có một test ca hỏng; tắt cổng thì test đỏ (8/8).
 
-## 11. Nợ
+## 11. Xuất kết quả (27-09)
+
+`export` biến một run thành bộ giao cho người ngoài: `camera.yaml` (định dạng
+`cv::FileStorage` mà mọi chương trình OpenCV đọc được), `camera.json`, `report.html`.
+
+| Quyết định | Vì sao |
+|---|---|
+| Báo cáo có mục **Cảnh báo** luôn hiện, kể cả khi trống ("None.") | người nhận không đọc `validated=false`; gì đáng lo phải nói bằng câu |
+| Cảnh báo góc ảnh không có điểm bảng | méo ở đó là ngoại suy. Phiên tham chiếu 1080p: 3/4 góc trống, mà các con số khác vẫn đẹp |
+| Cảnh báo RMS > 1 px | phiên tham chiếu RMS 2.8 px, một số ảnh 5 px, mà FOV và ± vẫn trông bình thường |
+| Chỉ ghi tên tệp | manifest giữ đường dẫn đầy đủ trên máy người gửi; không được lộ ra báo cáo |
+| `examples/undistort.py` chỉ phụ thuộc OpenCV + NumPy, từ chối ảnh khác độ phân giải | người nhận chạy được mà không cài công cụ này; K chỉ đúng ở đúng độ phân giải đã đo |
+
+**Đã kiểm:** YAML đọc lại bằng `cv2.FileStorage` ra đúng K, D. Một chấm sáng đặt ở
+vị trí **bị méo** của một tia, sau khi khử méo bằng `camera.yaml` đã xuất, nằm cách
+vị trí **không méo** của cùng tia dưới 2 px (hai vị trí cách nhau > 20 px). Pinhole
+khớp công thức đóng tới 1e-9°. Làm hỏng từng chỗ (đảo thứ tự D, đổi fx/fy, bỏ D khi
+khử méo, lấy sai góc chéo, ghi cả đường dẫn, tắt từng cảnh báo): test đỏ 7/7.
+
+## 12. Nợ
 
 - **Chưa có test cho `camera.py`** — toàn bộ đường nói chuyện với phần cứng. Đã
   có lần 9/9 test xanh trong khi `do_fov.py` gãy ngay dòng `import`.
 - **Chưa có test cho `stability()`**.
 - **Cổng `observations_sufficient` chỉ đếm phủ vị trí**, không đo đa dạng phối
   cảnh — nó xanh kể cả khi bộ ảnh thiếu nghiêng. Hiện phải tự canh khi chụp.
-- **`fov_pinhole_reference` thiếu đường chéo** — muốn đối chiếu chéo với thông số
-  hãng phải tự tính ngoài.
+- **`fov_pinhole_reference` trong `result.json` vẫn thiếu đường chéo** (giữ nguyên
+  schema). `export` đã tính đủ ba chiều pinhole; nhưng pinhole chưa có bootstrap
+  riêng, báo cáo đang mượn độ tản của FOV tia thật để quy ra σ khi so datasheet.
 - **`import` chưa chạy trên ảnh điện thoại thật và video thật.** Phần chuẩn hoá độ
   phân giải chỉ mới kiểm bằng ảnh phóng to, chưa có bộ ảnh 12 MP thật; ngưỡng đứng
   yên của video 4K là suy ra, chưa đo.

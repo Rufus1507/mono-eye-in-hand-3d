@@ -269,4 +269,75 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(len(result.accepted), 3)
 
 
+SYN_K = np.array([[850., 0, 639.5], [0, 850., 359.5], [0, 0, 1.]])
+SYN_D = np.array([-.25, .08, .001, -.001, 0.])   # meo ro de cham sang dich xa
+
+
+def synthetic_session(root, n=25):
+    spec, board, _ = load_board(ROOT / "bang_calib_A4.yaml")
+    obj = board.getChessboardCorners(); center = obj.mean(axis=0)
+    rng = np.random.default_rng(7)
+    writer = SessionWriter(Path(root), spec, {}, {"width": 1280, "height": 720}, {"name": "synthetic"})
+    for i in range(n):
+        rv = rng.uniform([-.45, -.45, -.25], [.45, .45, .25]); R, _ = cv2.Rodrigues(rv)
+        tv = np.array([rng.uniform(-4, 4), rng.uniform(-2, 2), rng.uniform(12, 20)]) - R @ center
+        ip, _ = cv2.projectPoints(obj, rv, tv, SYN_K, SYN_D)
+        writer.add(np.zeros((720, 1280, 3), np.uint8),
+                   observation(ip.reshape(-1, 2) + rng.normal(0, .1, (len(obj), 2)), timestamp_ns=i + 1))
+    writer.close("captured")
+    return writer.path, board
+
+
+class ExportTests(unittest.TestCase):
+    def test_pinhole_fov_matches_closed_form(self):
+        from fov_tool.export import pinhole_fov
+        f = pinhole_fov(SYN_K, 1280, 720)
+        self.assertAlmostEqual(f["horizontal_deg"], np.degrees(2 * np.arctan(640 / 850)), places=9)
+        self.assertAlmostEqual(f["vertical_deg"], np.degrees(2 * np.arctan(360 / 850)), places=9)
+        self.assertAlmostEqual(f["diagonal_deg"], np.degrees(2 * np.arctan(np.hypot(640, 360) / 850)), places=9)
+
+    def test_exported_yaml_undistorts_a_known_point(self):
+        # Cham sang dat o vi tri BI MEO cua mot tia; sau khi khu meo bang camera.yaml da xuat,
+        # no phai nam o vi tri KHONG MEO cua cung tia do. Sai K, D, thu tu D hay chieu remap deu lam lech.
+        sys.path.insert(0, str(ROOT / "examples"))
+        import undistort
+        from fov_tool.export import export, read_opencv_yaml
+        with tempfile.TemporaryDirectory() as td:
+            session, board = synthetic_session(td)
+            report, _ = analyze(session, board, bootstrap=0)
+            out = export(session, camera_name="syn")
+            K, D, size = read_opencv_yaml(out / "camera.yaml")
+            np.testing.assert_allclose(K, report["K"], rtol=0, atol=1e-9)
+            np.testing.assert_allclose(D, report["D"], rtol=0, atol=1e-12)
+            self.assertEqual(size, (1280, 720))
+            ray = np.array([[[.62, .36, 1.]]])
+            p_d = cv2.projectPoints(ray, np.zeros(3), np.zeros(3), SYN_K, SYN_D)[0].reshape(2)
+            p_u = cv2.projectPoints(ray, np.zeros(3), np.zeros(3), SYN_K, np.zeros(5))[0].reshape(2)
+            self.assertGreater(np.linalg.norm(p_d - p_u), 20)   # phep thu co y nghia: hai vi tri xa nhau
+            img = np.zeros((720, 1280), np.float32)
+            cv2.circle(img, tuple(int(round(v)) for v in p_d), 3, 255, -1)
+            m1, m2, _ = undistort.build_maps(*undistort.load_camera(out / "camera.yaml"), keep_k=True)
+            got = cv2.minMaxLoc(cv2.GaussianBlur(cv2.remap(img, m1, m2, cv2.INTER_LINEAR), (0, 0), 2))[3]
+            self.assertLess(np.linalg.norm(np.array(got) - p_u), 2.0, (got, p_u, p_d))
+
+    def test_report_warns_on_empty_corner_and_hides_paths(self):
+        from fov_tool.export import report_html
+        with tempfile.TemporaryDirectory() as td:
+            session, board = synthetic_session(td)
+            result, _ = analyze(session, board, bootstrap=0)
+        manifest = {"import": {"records": [
+            {"file": r"C:\Users\someone\secret_folder\IMG_0001.jpg", "decision": "accepted", "corners": 60, "quality": 7.0},
+            {"file": r"C:\Users\someone\secret_folder\IMG_0002.jpg", "decision": "blurry", "corners": 60, "quality": 3.1}]}}
+        full = [[3] * 8 for _ in range(5)]
+        result["coverage"] = {**result["coverage"], "independent_views_per_cell": full}
+        page = report_html(result, manifest, "cam")
+        self.assertIn("IMG_0002.jpg", page); self.assertIn("too blurry", page)
+        self.assertNotIn("secret_folder", page); self.assertNotIn("someone", page)
+        self.assertNotIn("corner of the image", page)
+        self.assertNotIn("usually below 1 px", page)   # du lieu gia lap: RMS ~0.14 px
+        full[4][0] = 0
+        self.assertIn("bottom-left corner of the image", report_html(result, manifest, "cam"))
+        self.assertIn("usually below 1 px", report_html({**result, "rms_px": 2.8}, manifest, "cam"))
+
+
 if __name__ == "__main__": unittest.main()

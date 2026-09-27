@@ -230,6 +230,17 @@ def print_report(report, run_dir):
     print(f"  báo cáo: {run_dir / 'result.json'}")
 
 
+def export_cmd(args):
+    from fov_tool.export import export
+    datasheet = {"hfov": args.datasheet_hfov, "dfov": args.datasheet_dfov}
+    out = export(args.session, args.run, args.out, args.name,
+                 datasheet if any(v is not None for v in datasheet.values()) else None)
+    print(f"Đã xuất: {out}")
+    for name in ("camera.yaml", "camera.json", "report.html"):
+        print(f"  {out / name}")
+    return 0
+
+
 def compare(args):
     rows = []
     for path in args.results:
@@ -293,6 +304,14 @@ def parser():
     a.add_argument("--bootstrap", type=int, default=10,
                    help="số lần bootstrap để đo SAI SỐ THẬT của phép đo (0 = tắt)")
     a.add_argument("--min-corners", type=int, default=12); a.set_defaults(func=analyze_cmd)
+    e = sub.add_parser("export", help="xuất camera.yaml, camera.json, report.html để giao cho người dùng")
+    e.add_argument("session", type=Path)
+    e.add_argument("--run", type=Path, default=None, help="thư mục run; mặc định run mới nhất")
+    e.add_argument("--out", type=Path, default=None, help="mặc định <run>/export")
+    e.add_argument("--name", default="camera", help="tên camera ghi trong báo cáo")
+    e.add_argument("--datasheet-hfov", type=float, default=None, help="FOV ngang hãng công bố (độ)")
+    e.add_argument("--datasheet-dfov", type=float, default=None, help="FOV chéo hãng công bố (độ)")
+    e.set_defaults(func=export_cmd)
     q = sub.add_parser("compare", help="so nhiều result.json cùng định nghĩa")
     q.add_argument("results", type=Path, nargs="+"); q.set_defaults(func=compare)
     return p
