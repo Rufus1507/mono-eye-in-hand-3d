@@ -3,7 +3,8 @@ param(
     [string[]] $FovArguments
 )
 
-# Chay bang py -3.14 theo quy uoc du an (python 3.12 mac dinh thieu cv2/numpy/yaml).
+# Uu tien uv (moi truong trong pyproject.toml). Neu may khong co uv thi quay ve
+# cach cu: py -3.14 voi cac goi trong requirements.txt.
 # KHONG dat PYTHONPATH: thu muc chua do_fov.py tu vao sys.path[0] khi goi thang file.
 # File nay viet TIENG VIET KHONG DAU: Windows PowerShell 5.1 doc script .ps1
 # khong co BOM bang codepage ANSI, chu co dau se lam vo chuoi -> ParserError.
@@ -16,5 +17,9 @@ if (-not (Test-Path -LiteralPath $script)) {
     exit 127
 }
 
-& py -3.14 $script @FovArguments
+if (Get-Command uv -ErrorAction SilentlyContinue) {
+    & uv run --project $scriptRoot python $script @FovArguments
+} else {
+    & py -3.14 $script @FovArguments
+}
 exit $LASTEXITCODE

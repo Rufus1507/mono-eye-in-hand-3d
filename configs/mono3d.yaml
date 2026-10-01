@@ -1,0 +1,25 @@
+# Quy ước chung cho phần mono_eye. Thông số tấm ChArUco KHÔNG lặp lại ở đây:
+# đọc từ file bảng của fov_tool để chỉ có một nguồn sự thật.
+units: mm
+
+camera:
+  index: 0                         # có thể đổi sau khi cắm lại
+  width: 1280                      # cố định cho cả dự án; đổi là phải hiệu chuẩn lại
+  height: 720
+  # camera.yaml do `do_fov.py export` tạo ra (nằm trong sessions/<phiên>/runs/<run>/export/).
+  # Copy về đường dẫn dưới đây sau khi hiệu chuẩn.
+  calib_file: data/calib/camera.yaml
+
+board:
+  file: bang_calib_A4.yaml         # cùng file với `do_fov.py capture --board`
+  # Cạnh ô thật tính bởi mono_eye.board_scale từ kiem_in.do_duoc_* trong file trên.
+
+world_frame:
+  # Gốc và chiều trục được KIỂM CHỨNG ở giai đoạn 3 (vẽ trục lên ảnh), không giả định.
+  origin: "góc tấm (sẽ kiểm chứng)"
+  z_axis: "hướng lên khỏi mặt bàn (sẽ kiểm chứng)"
+  table_plane_z_mm: 0.0
+
+quality_gate:                      # giá trị tạm, chỉnh ở giai đoạn 3
+  min_charuco_corners: 6
+  max_reprojection_error_px: 1.5

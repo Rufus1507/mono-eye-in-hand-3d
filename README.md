@@ -389,3 +389,40 @@ sessions/<id>/     manifest.json · board.yaml · frames/ · observations.jsonl
 ### Giấy phép
 
 MIT
+
+---
+
+## Phần mở rộng: tọa độ 3D từ một camera (`mono_eye`)
+
+Mục tiêu: dùng MỘT camera di chuyển (cầm tay, sau này gắn trên tay robot), đổi một điểm ảnh (ví dụ vật do YOLO phát hiện)
+thành tọa độ 3D trên mặt bàn, lấy tấm ChArUco làm mốc. Phần hiệu chuẩn ở trên được giữ nguyên; `mono_eye/` chỉ dùng lại nó.
+Lộ trình: [`docs/roadmap.md`](docs/roadmap.md). Quy ước: [`docs/conventions.md`](docs/conventions.md).
+Ghi chú repo tham khảo: [`docs/repo-notes.md`](docs/repo-notes.md).
+
+### Môi trường (uv)
+
+```powershell
+uv sync                                      # lõi: OpenCV contrib 4.13, NumPy, PyYAML, Pillow, pytest
+uv run python scripts/check_env.py           # kiểm tra môi trường và file bảng
+uv run python scripts/check_env.py --camera 0
+uv run pytest tests/test_mono_eye.py
+
+uv sync --group detect                       # giai đoạn 5: ultralytics (YOLO, kéo theo PyTorch)
+uv sync --group viz                          # giai đoạn 6: Rerun
+uv sync --group analysis                     # giai đoạn 7-8: pandas, matplotlib, scipy
+```
+
+`.\run_fov.ps1 capture ...` dùng `uv run` nếu máy có uv, nếu không thì quay về `py -3.14` với `requirements.txt` như cũ.
+Phần hiệu chuẩn chạy được trên Python 3.12 (thử trên Linux: 25/26 test đạt; test còn lại thử đường dẫn kiểu Windows nên
+chỉ phụ thuộc hệ điều hành, chưa chạy thử trên Windows).
+
+### Cấu trúc thêm vào
+
+```
+mono_eye/          config.py, camera_io.py, board_scale.py (đã có) | pose, projection, detect, viz, evaluate (khung rỗng)
+configs/           mono3d.yaml, ground_truth_points.csv
+scripts/           check_env.py
+docs/              roadmap.md, conventions.md, repo-notes.md
+tests/             test_mono_eye.py
+data/, results/    đầu ra cục bộ (nội dung bị gitignore)
+```

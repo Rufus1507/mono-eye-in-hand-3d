@@ -1,0 +1,40 @@
+[project]
+name = "camera-fov-charuco"
+version = "2.2.0"
+description = "ChArUco camera calibration (camera-fov-charuco) + single-camera pixel -> 3D table-plane localisation (mono_eye)."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    # Keep the same OpenCV minor as the upstream tool: the ChArUco board image and the
+    # detector must come from the same OpenCV version. NOT the headless build.
+    "opencv-contrib-python>=4.13,<4.14",
+    "PyYAML>=6.0",
+    "Pillow>=10.0",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+detect = ["ultralytics"]                          # stage 5: YOLO
+viz = ["rerun-sdk"]                               # stage 6: 3D viewer
+analysis = ["pandas", "matplotlib", "scipy"]      # stages 7-8
+
+[tool.uv]
+default-groups = ["dev"]
+# ultralytics depends on `opencv-python`, which clashes with `opencv-contrib-python`
+# (both provide `cv2`). Make that requirement unsatisfiable so only contrib is installed.
+override-dependencies = [
+    "opencv-python; sys_platform == 'never'",
+    "opencv-python-headless; sys_platform == 'never'",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fov_tool", "mono_eye"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
