@@ -70,13 +70,13 @@ def check_board() -> None:
 
 
 def check_board_measured() -> None:
-    from mono_eye.board_scale import BoardNotMeasured, board_scale
-    from mono_eye.config import load_config, resolve
+    from mono_eye.board_scale import BoardNotMeasured, board_scale_from_config
+    from mono_eye.config import load_config
     try:
-        s = board_scale(resolve(load_config()["board"]["file"]))
+        s = board_scale_from_config(load_config())
         report(OK, f"cạnh ô thật {s.square_mm:.3f} mm (tỉ lệ ngang {s.scale_x:.4f}, dọc {s.scale_y:.4f})")
     except BoardNotMeasured:
-        report(WARN, "chưa đo bảng in (do_duoc_*): chưa cần cho giai đoạn 0, cần từ giai đoạn 3")
+        report(WARN, "chưa đo bảng in (board.measured.* trong configs/mono3d.yaml): chưa cần cho giai đoạn 0, cần từ giai đoạn 3")
     except Exception as e:  # noqa: BLE001
         report(FAIL, f"số đo bảng không hợp lệ: {e}")
 
@@ -90,21 +90,18 @@ def check_module(name: str, required: bool, hint: str) -> None:
 
 
 def check_camera(index: int, width: int, height: int) -> None:
-    import cv2
-    backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
-    cap = cv2.VideoCapture(index, backend)
-    if not cap.isOpened():
-        report(FAIL, f"không mở được camera {index} (thử index khác, đóng app khác đang dùng camera)")
+    # Dùng chính open_camera của fov_tool (thứ tự đặt fps -> kích thước -> MJPG, thử msmf/dshow/any),
+    # để phép thử phản ánh đúng điều kiện lúc chụp thật.
+    from fov_tool.camera import open_camera
+    try:
+        cap, frame, actual = open_camera(index, width, height, 30.0, "auto")
+    except RuntimeError as e:
+        report(FAIL, f"{e} (thử index khác, đóng app khác đang dùng camera)")
         return
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    ok, frame = cap.read()
     cap.release()
-    if not ok:
-        report(FAIL, f"camera {index} mở được nhưng không đọc được khung")
-        return
     h, w = frame.shape[:2]
-    report(OK if (w, h) == (width, height) else WARN, f"camera {index} trả về {w}x{h} (yêu cầu {width}x{height})")
+    report(OK if (w, h) == (width, height) else WARN,
+           f"camera {index} ({actual['backend']}, {actual['fourcc_text']}) trả về {w}x{h} (yêu cầu {width}x{height})")
 
 
 def main() -> int:

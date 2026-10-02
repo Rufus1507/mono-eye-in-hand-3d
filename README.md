@@ -413,8 +413,11 @@ uv sync --group analysis                     # giai đoạn 7-8: pandas, matplot
 ```
 
 `.\run_fov.ps1 capture ...` dùng `uv run` nếu máy có uv, nếu không thì quay về `py -3.14` với `requirements.txt` như cũ.
-Phần hiệu chuẩn chạy được trên Python 3.12 (thử trên Linux: 25/26 test đạt; test còn lại thử đường dẫn kiểu Windows nên
-chỉ phụ thuộc hệ điều hành, chưa chạy thử trên Windows).
+Phần hiệu chuẩn chạy được trên Python 3.12: 26/26 test đạt trên Windows 11 (đánh giá độc lập), còn trên Linux
+25/26 vì một test thử đường dẫn kiểu Windows.
+
+Lưu ý: `uv sync` mặc định gỡ các gói ngoài nhóm mặc định. Khi làm giai đoạn 5 hãy luôn chạy `uv sync --group detect`
+(hoặc `--all-groups`), nếu không PyTorch và ultralytics sẽ bị gỡ. `uv run` thì không gỡ gói.
 
 ### Cấu trúc thêm vào
 

@@ -20,6 +20,10 @@ if (-not (Test-Path -LiteralPath $script)) {
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     & uv run --project $scriptRoot python $script @FovArguments
 } else {
+    if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
+        Write-Error "Khong tim thay uv va py. Cai uv (khuyen nghi) hoac Python 3.14."
+        exit 127
+    }
     & py -3.14 $script @FovArguments
 }
 exit $LASTEXITCODE

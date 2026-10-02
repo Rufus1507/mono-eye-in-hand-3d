@@ -12,7 +12,12 @@ camera:
 
 board:
   file: bang_calib_A4.yaml         # cùng file với `do_fov.py capture --board`
-  # Cạnh ô thật tính bởi mono_eye.board_scale từ kiem_in.do_duoc_* trong file trên.
+  # Sau khi IN bảng: dùng thước thép đo cả bảng (mép ngoài các ô đen ở hai góc), đơn vị mm.
+  # Danh nghĩa (A4): 235.63 x 149.94. Cạnh ô thật do mono_eye.board_scale tính từ hai số này.
+  measured:
+    board_width_mm: null           # mép trái -> mép phải
+    board_height_mm: null          # mép trên -> mép dưới
+  max_anisotropy: 0.015            # lệch tối đa giữa tỉ lệ ngang và dọc (1.5 %, tạm thời)
 
 world_frame:
   # Gốc và chiều trục được KIỂM CHỨNG ở giai đoạn 3 (vẽ trục lên ảnh), không giả định.

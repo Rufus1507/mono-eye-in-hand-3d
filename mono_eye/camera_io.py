@@ -25,9 +25,15 @@ class CameraModel:
 
 
 def load_camera_yaml(path: str | Path) -> CameraModel:
-    fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
+    # Đọc nội dung bằng Python rồi đưa cho OpenCV dạng chuỗi: tránh việc cv2.FileStorage mở file
+    # bằng bảng mã ANSI trên Windows (đường dẫn có dấu tiếng Việt có thể mở không được).
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Không tìm thấy file camera: {path}")
+    fs = cv2.FileStorage(p.read_text(encoding="utf-8"),
+                         cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
     if not fs.isOpened():
-        raise FileNotFoundError(f"Không mở được file camera: {path}")
+        raise ValueError(f"Không đọc được nội dung camera.yaml: {path}")
     try:
         K = fs.getNode("camera_matrix").mat()
         dist = fs.getNode("distortion_coefficients").mat()
@@ -37,4 +43,6 @@ def load_camera_yaml(path: str | Path) -> CameraModel:
         fs.release()
     if K is None or dist is None:
         raise ValueError(f"{path} thiếu camera_matrix hoặc distortion_coefficients")
+    if width <= 0 or height <= 0:
+        raise ValueError(f"{path} có kích thước ảnh không hợp lệ: {width}x{height}")
     return CameraModel(K=K, dist=dist.reshape(-1), width=width, height=height)

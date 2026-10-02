@@ -1,13 +1,17 @@
-"""Cạnh ô THẬT của tấm ChArUco đã in, tính từ các số đo bằng thước.
+"""Cạnh ô THẬT của tấm ChArUco đã in, tính từ số đo bằng thước.
 
-Hiệu chuẩn camera (fov_tool) coi cạnh ô = 1.0 vì K không phụ thuộc thang đo. Nhưng tọa độ 3D
-thì phụ thuộc: sai thang đo là sai mọi kết quả. Nên ở đây dùng số đo thật.
+Hiệu chuẩn camera (fov_tool) coi cạnh ô = 1.0 vì K không phụ thuộc thang đo. Nhưng tọa độ 3D thì
+phụ thuộc: sai thang đo là sai mọi kết quả. Nên ở đây dùng số đo thật.
 
-File bảng (bang_calib_*.yaml) có sẵn các trường kiem_in:
-    thuoc_ngang_mm / thuoc_doc_mm      độ dài danh nghĩa của hai thước in ở lề giấy
-    do_duoc_ngang_mm / do_duoc_doc_mm  độ dài bạn ĐO ĐƯỢC của hai thước đó sau khi in
-Tỉ lệ ngang = do_duoc_ngang / thuoc_ngang, tỉ lệ dọc tương tự. Hai tỉ lệ phải gần bằng nhau
-(nếu lệch thì bảng bị méo, theo tao_bang.py là phải in lại).
+Số đo nằm trong configs/mono3d.yaml (mục board.measured), KHÔNG nằm trong file bảng:
+    board_width_mm   : từ mép ngoài trái tới mép ngoài phải của cả bảng (các ô đen ở hai góc)
+    board_height_mm  : từ mép ngoài trên tới mép ngoài dưới của cả bảng
+Giá trị danh nghĩa lấy từ file bảng: kiem_in.ca_bang_ngang_mm / ca_bang_doc_mm.
+Các trường kiem_in.do_duoc_* và thuoc_* của file bảng KHÔNG được dùng ở đây: tao_bang.py không
+nói rõ do_duoc_* ứng với thước lề hay với cả bảng, nên mono_eye dùng trường riêng, tên rõ nghĩa.
+
+Tỉ lệ ngang = đo được / danh nghĩa theo chiều ngang, tỉ lệ dọc tương tự. Hai tỉ lệ phải gần
+nhau; lệch nhiều nghĩa là bảng in bị méo (tao_bang.py: phải in lại).
 """
 from __future__ import annotations
 
@@ -16,9 +20,11 @@ from pathlib import Path
 
 import yaml
 
+DEFAULT_MAX_ANISOTROPY = 0.015  # 1.5 %, tạm thời: đo lệch ngược chiều 1 mm ở cả hai chiều đã cho ~1.1 %
+
 
 class BoardNotMeasured(RuntimeError):
-    """Chưa điền do_duoc_ngang_mm / do_duoc_doc_mm trong file bảng."""
+    """Chưa điền board.measured.* trong configs/mono3d.yaml."""
 
 
 @dataclass(frozen=True)
@@ -30,27 +36,48 @@ class BoardScale:
     anisotropy: float         # |sx - sy| / trung bình
 
 
-def board_scale(board_yaml: str | Path, max_anisotropy: float = 0.005) -> BoardScale:
-    """Tính cạnh ô thật. `max_anisotropy` (0.5% mặc định, tạm thời) là độ lệch cho phép
-    giữa tỉ lệ ngang và dọc; vượt ngưỡng thì báo lỗi (in lại bảng)."""
-    cfg = yaml.safe_load(Path(board_yaml).read_text(encoding="utf-8")) or {}
-    printed = cfg.get("ban_in") or {}
-    check = cfg.get("kiem_in") or {}
-    design = printed.get("canh_o_mm")
-    if design is None:
-        raise ValueError(f"{board_yaml} thiếu ban_in.canh_o_mm")
-    need = ("thuoc_ngang_mm", "thuoc_doc_mm", "do_duoc_ngang_mm", "do_duoc_doc_mm")
-    if any(check.get(k) is None for k in need):
+def _nominal(board_yaml: Path) -> tuple[float, float, float]:
+    cfg = yaml.safe_load(board_yaml.read_text(encoding="utf-8")) or {}
+    bang, printed, check = (cfg.get(k) or {} for k in ("bang", "ban_in", "kiem_in"))
+    try:
+        square = float(printed["canh_o_mm"])
+        w = float(check["ca_bang_ngang_mm"])
+        h = float(check["ca_bang_doc_mm"])
+        nx, ny = int(bang["o_ngang"]), int(bang["o_doc"])
+    except KeyError as e:
+        raise ValueError(f"{board_yaml} thiếu trường {e}") from e
+    # Bắt lỗi file bảng không nhất quán với chính nó (sai quá 0.2 %).
+    if abs(w - nx * square) / w > 0.002 or abs(h - ny * square) / h > 0.002:
+        raise ValueError(f"{board_yaml}: ca_bang_* không khớp số ô x canh_o_mm")
+    return square, w, h
+
+
+def board_scale(board_yaml: str | Path, measured_width_mm: float | None,
+                measured_height_mm: float | None,
+                max_anisotropy: float = DEFAULT_MAX_ANISOTROPY) -> BoardScale:
+    if measured_width_mm is None or measured_height_mm is None:
         raise BoardNotMeasured(
-            "Chưa có số đo thật: điền kiem_in.do_duoc_ngang_mm và do_duoc_doc_mm "
-            f"trong {board_yaml} sau khi đo hai thước in ở lề giấy."
+            "Chưa có số đo thật: điền board.measured.board_width_mm và board_height_mm "
+            "trong configs/mono3d.yaml sau khi đo cả bảng đã in."
         )
-    sx = float(check["do_duoc_ngang_mm"]) / float(check["thuoc_ngang_mm"])
-    sy = float(check["do_duoc_doc_mm"]) / float(check["thuoc_doc_mm"])
+    square, w, h = _nominal(Path(board_yaml))
+    sx = float(measured_width_mm) / w
+    sy = float(measured_height_mm) / h
     mean = (sx + sy) / 2.0
     aniso = abs(sx - sy) / mean
     if aniso > max_anisotropy:
         raise ValueError(
-            f"Tỉ lệ ngang {sx:.4f} khác tỉ lệ dọc {sy:.4f} ({aniso:.2%}): bảng in bị méo, nên in lại."
+            f"Tỉ lệ ngang {sx:.4f} khác tỉ lệ dọc {sy:.4f} ({aniso:.2%} > {max_anisotropy:.2%}): "
+            "đo lại bằng thước thép; nếu vẫn lệch thì bảng in bị méo, nên in lại."
         )
-    return BoardScale(float(design), sx, sy, float(design) * mean, aniso)
+    return BoardScale(square, sx, sy, square * mean, aniso)
+
+
+def board_scale_from_config(cfg: dict) -> BoardScale:
+    """Tính từ cấu hình mono3d.yaml đã load (dùng mono_eye.config.load_config)."""
+    from mono_eye.config import resolve
+
+    b = cfg["board"]
+    m = b.get("measured") or {}
+    return board_scale(resolve(b["file"]), m.get("board_width_mm"), m.get("board_height_mm"),
+                       float(b.get("max_anisotropy", DEFAULT_MAX_ANISOTROPY)))

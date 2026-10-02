@@ -4,9 +4,10 @@ Chỉ đánh dấu một giai đoạn khi đạt tiêu chí hoàn thành. Các n
 
 - [x] **0 Setup**: môi trường uv, gói `mono_eye`, kiểm tra môi trường.
       Xong khi: `scripts/check_env.py` đạt, `pytest tests/test_mono_eye.py` đạt.
-- [ ] **1 Chuẩn bị vật lý**: in bảng (100 %, giấy mờ), đo hai thước in ở lề giấy và điền `kiem_in.do_duoc_ngang_mm`,
-      `do_duoc_doc_mm` vào file bảng, dán phẳng cố định lên bàn, đo các điểm chuẩn vào `configs/ground_truth_points.csv`.
-      Xong khi: `board_scale()` trả về cạnh ô thật.
+- [ ] **1 Chuẩn bị vật lý**: in bảng (100 %, giấy mờ), dùng thước thép đo cả bảng đã in (chiều ngang và dọc) và điền
+      `board.measured.*` trong `configs/mono3d.yaml`, dán phẳng cố định lên bàn, đo các điểm chuẩn vào
+      `configs/ground_truth_points.csv`.
+      Xong khi: `scripts/check_env.py` in ra cạnh ô thật thay vì cảnh báo "chưa đo bảng in".
 - [ ] **2 Hiệu chuẩn nội tham số** (có sẵn trong `do_fov.py`): 40 khung, nghiêng 20-45 độ, phủ bốn góc khung,
       `--bootstrap 100`, rồi `export` và copy `camera.yaml` về `data/calib/`.
       Xong khi: độ tản bootstrap nhỏ và ảnh khử méo thẳng.
