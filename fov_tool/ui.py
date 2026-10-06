@@ -18,6 +18,6 @@ def draw(frame, obs, status, count, target, mirror=True):
     if obs is not None:
         cv2.putText(canvas, f"goc {len(obs.ids)} | Qxy {obs.quality:.1f} ({obs.quality_x:.0f}/{obs.quality_y:.0f})",
                     (14, 81), cv2.FONT_HERSHEY_SIMPLEX, .48, (180,180,180), 1)
-    cv2.putText(canvas, "Q huy | ENTER tinh | SPACE luu co danh dau force", (12, canvas.shape[0]-8),
+    cv2.putText(canvas, "Q huy | ENTER tinh | SPACE force | R xoay 90 | M mirror", (12, canvas.shape[0]-8),
                 cv2.FONT_HERSHEY_SIMPLEX, .45, (200,200,200), 1)
     return canvas

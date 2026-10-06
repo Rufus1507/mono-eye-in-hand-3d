@@ -1,1 +1,7 @@
-point_id,x_mm,y_mm,note
+point_id,x_mm,y_mm,z_mm,note
+# Template ground truth points - Cập nhật chính xác sau khi in và đo bảng ChArUco
+# Mẫu tọa độ các điểm mốc tham chiếu trên mặt bàn (Z = 0 mm):
+p01,0.0,0.0,0.0,Goc toa do ChArUco
+p02,100.0,0.0,0.0,Moc truc X cach goc 100mm
+p03,0.0,100.0,0.0,Moc truc Y cach goc 100mm
+p04,100.0,100.0,0.0,Moc cheo goc cach goc 141.4mm

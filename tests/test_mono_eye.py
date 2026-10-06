@@ -1,4 +1,6 @@
 """Test phần mono_eye (pytest). Test của fov_tool vẫn nằm ở tests/test_fov.py."""
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -67,12 +69,15 @@ def test_inconsistent_board_yaml_is_rejected(tmp_path):
 
 
 def _write_camera(path, w=1280, h=720):
-    fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_WRITE)
+    fs = cv2.FileStorage("", cv2.FILE_STORAGE_WRITE | cv2.FILE_STORAGE_MEMORY)
     fs.write("camera_matrix", np.array([[900.0, 0, 640], [0, 900.0, 360], [0, 0, 1]]))
     fs.write("distortion_coefficients", np.array([[0.1, -0.05, 0.0, 0.0, 0.0]]))
     fs.write("image_width", w)
     fs.write("image_height", h)
-    fs.release()
+    text = fs.releaseAndGetString()
+    Path(path).write_text(text, encoding="utf-8")
+
+
 
 
 def test_camera_yaml_roundtrip_and_resolution_check(tmp_path):

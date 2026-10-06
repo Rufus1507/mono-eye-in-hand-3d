@@ -144,10 +144,18 @@ def analyze(session_path: Path, board, k3=False, override_rows=None,
             detection_source="stored", fix_principal=False, bootstrap=10):
     manifest, stored_rows = load_session(session_path)
     rows = stored_rows if override_rows is None else override_rows
-    if not rows: raise ValueError("Phiên không có ảnh")
     forced_count = sum(bool(row.get("forced")) for row in rows)
-    rows = [row for row in rows if not row.get("forced")]
-    if not rows: raise ValueError("Phiên chỉ có ảnh FORCE; không có ảnh tự động đạt cổng chất lượng")
+    auto_rows = [row for row in rows if not row.get("forced")]
+    if len(auto_rows) >= 6:
+        rows = auto_rows
+        excluded_forced = forced_count
+    else:
+        valid_rows = [row for row in rows if len(row.get("ids", [])) >= 6]
+        if len(valid_rows) >= 6:
+            rows = valid_rows
+            excluded_forced = 0
+        else:
+            raise ValueError("Phiên chỉ có ảnh FORCE; không có ảnh tự động đạt cổng chất lượng")
     size = tuple(manifest["actual_camera"][k] for k in ("width", "height"))
     test = [row for i, row in enumerate(rows) if i % 5 == 0]
     train = [row for i, row in enumerate(rows) if i % 5 != 0]
@@ -187,7 +195,7 @@ def analyze(session_path: Path, board, k3=False, override_rows=None,
                         "test_indices": [row["index"] for row in test]},
               "observation_gate": {"minimum_views": 20, "minimum_cells_with_2_views": 28},
               "residual_structure": residual_structure(final["residuals"], size),
-              "excluded_forced_views": forced_count, "residuals": final["residuals"]}
+              "excluded_forced_views": excluded_forced, "residuals": final["residuals"]}
     rid, run_dir = create_run_dir(session_path)
     report["run_id"] = rid
     (run_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

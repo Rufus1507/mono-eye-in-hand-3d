@@ -37,6 +37,52 @@ def capture(args):
     controls_done = not (args.freeze_focus or args.freeze_exposure)
     settle_until_ns = 0
     finished = False
+
+    # Đọc cấu hình từ configs/mono3d.yaml
+    cfg_rotation = None
+    cfg_mirror = None
+    cfg_path = ROOT / "configs" / "mono3d.yaml"
+    if cfg_path.exists():
+        try:
+            import yaml
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg_data = yaml.safe_load(f)
+            if cfg_data and isinstance(cfg_data, dict):
+                cam_cfg = cfg_data.get("camera", {})
+                if "rotation" in cam_cfg:
+                    cfg_rotation = int(cam_cfg["rotation"])
+                elif cam_cfg.get("rotate_180", False):
+                    cfg_rotation = 180
+                if "mirror" in cam_cfg:
+                    cfg_mirror = bool(cam_cfg["mirror"])
+        except Exception:
+            pass
+
+    # Xác định góc xoay (ưu tiên: args.rotation > args.rotate_180 > config > 90 mặc định)
+    if getattr(args, "rotation", None) is not None:
+        rotation = int(args.rotation)
+    elif getattr(args, "rotate_180", None) is True:
+        rotation = 180
+    elif getattr(args, "rotate_180", None) is False:
+        rotation = 0
+    elif cfg_rotation is not None:
+        rotation = cfg_rotation
+    else:
+        rotation = 90  # Mặc định xoay phải 90° theo yêu cầu
+    rotation = rotation % 360
+
+    # Xác định mirror mode (ưu tiên CLI args.mirror > config > False)
+    if getattr(args, "mirror", None) is not None:
+        mirror_mode = bool(args.mirror)
+    elif cfg_mirror is not None:
+        mirror_mode = cfg_mirror
+    else:
+        mirror_mode = False
+
+    rot_names = {0: "0° (Bình thường)", 90: "90° (Xoay PHẢI)", 180: "180° (Lật ngược)", 270: "270° (Xoay TRÁI)"}
+    print(f"  [Camera] Hướng xoay: {rot_names.get(rotation, f'{rotation}°')} | Mirror: {'BẬT' if mirror_mode else 'TẮT'}")
+    print("  [Phím tắt] R: Xoay tiếp 90° | M: Bật/Tắt Mirror | SPACE: Lưu force | ENTER: Tính toán | Q: Thoát")
+
     print(f"Phiên: {writer.path}")
     print("Đổi tư thế, giữ yên ngắn; chương trình chọn frame tốt nhất.")
     cv2.namedWindow("do_fov", cv2.WINDOW_AUTOSIZE)
@@ -47,6 +93,16 @@ def capture(args):
                 writer.close("failed", "camera_read_failed")
                 print("Mất camera; phiên được giữ lại với trạng thái failed.")
                 return 2
+
+            if rotation == 90:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            elif rotation == 180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            elif rotation == 270:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+            writer.update_actual_camera({"width": frame.shape[1], "height": frame.shape[0], "rotation": rotation})
+
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             obs = detect(gray, detector, args.min_corners)
             if obs is not None and not controls_done:
@@ -71,13 +127,19 @@ def capture(args):
             # "Gi bng yn" ma khong ai biet. Moi chuoi status phai viet tieng
             # Viet KHONG DAU tu goc (cv2.putText font Hershey chi ve ASCII).
             view = draw(frame, obs, status,
-                        writer.manifest["accepted_frames"], args.target, bool(args.mirror))
+                        writer.manifest["accepted_frames"], args.target, mirror=mirror_mode)
             cv2.imshow("do_fov", view)
             key = cv2.waitKey(1) & 0xff
             if key in (ord("q"), 27):
                 writer.close("canceled", "user_cancel")
                 print("Đã hủy. Không hiệu chuẩn; dữ liệu phiên vẫn được giữ.")
                 return 1
+            if key in (ord("r"), ord("R")):
+                rotation = (rotation + 90) % 360
+                print(f"  [Phím R] Đã đổi góc xoay thành: {rot_names.get(rotation, f'{rotation}°')}")
+            if key in (ord("m"), ord("M")):
+                mirror_mode = not mirror_mode
+                print(f"  [Phím M] Lật gương (Mirror): {'BẬT' if mirror_mode else 'TẮT'}")
             if key == ord(" ") and obs is not None and not auto_saved:
                 writer.add(frame, obs, forced=True)
                 machine.accepted = obs; machine.state = "wait_change"
@@ -267,12 +329,19 @@ def parser():
     c.add_argument("--target", type=int, default=40); c.add_argument("--min-corners", type=int, default=12)
     c.add_argument("--stable-ms", type=int, default=400); c.add_argument("--motion-median", type=float, default=.8)
     c.add_argument("--motion-p90", type=float, default=1.5); c.add_argument("--min-quality", type=float, default=5.)
-    c.add_argument("--buffer", type=int, default=20); c.add_argument("--mirror", type=int, default=1)
+    c.add_argument("--buffer", type=int, default=20)
+    c.add_argument("--mirror", type=int, default=None, help="1: lật gương, 0: không lật (mặc định đọc configs/mono3d.yaml)")
+    c.add_argument("--rotation", type=int, choices=(0, 90, 180, 270), default=None,
+                   help="góc xoay ảnh: 0, 90 (phải), 180 (ngược), 270 (trái). Mặc định đọc configs/mono3d.yaml")
     c.add_argument("--freeze-focus", type=int, default=1,
                    help="thử khóa autofocus tại giá trị sau khi thấy bảng; manifest ghi rõ readback")
     c.add_argument("--freeze-exposure", type=int, default=0,
                    help="thử khóa exposure; mặc định tắt vì backend webcam khác nhau")
     c.add_argument("--k3", action="store_true")
+    c.add_argument("--rotate-180", dest="rotate_180", action="store_true", default=None,
+                   help="lật xoay khung hình 180 độ")
+    c.add_argument("--no-rotate-180", dest="rotate_180", action="store_false",
+                   help="tắt lật xoay khung hình 180 độ")
     c.add_argument("--bootstrap", type=int, default=10,
                    help="số lần bootstrap để đo SAI SỐ THẬT của phép đo "
                         "(0 = tắt; khi tắt thì báo cáo không có độ tản)")

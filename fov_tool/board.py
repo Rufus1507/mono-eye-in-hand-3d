@@ -19,8 +19,8 @@ class BoardSpec:
     square_mm: float | None
 
 
-def load_board(path: Path):
-    path = path.resolve()
+def load_board(path: str | Path):
+    path = Path(path).resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Không tìm thấy cấu hình bảng: {path}")
     raw = path.read_bytes()

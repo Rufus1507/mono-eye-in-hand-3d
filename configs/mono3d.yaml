@@ -3,9 +3,12 @@
 units: mm
 
 camera:
-  index: 0                         # có thể đổi sau khi cắm lại
+  index: 1                         # camera rời/webcam ngoài theo yêu cầu người dùng
   width: 1280                      # cố định cho cả dự án; đổi là phải hiệu chuẩn lại
   height: 720
+  rotation: 0                      # 0: góc chuẩn đã hiệu chuẩn (1280x720)
+  rotate_180: false                # tắt lật 180
+  mirror: false                    # tắt mirror để xem đúng chiều thực
   # camera.yaml do `do_fov.py export` tạo ra (nằm trong sessions/<phiên>/runs/<run>/export/).
   # Copy về đường dẫn dưới đây sau khi hiệu chuẩn.
   calib_file: data/calib/camera.yaml
@@ -28,3 +31,28 @@ world_frame:
 quality_gate:                      # giá trị tạm, chỉnh ở giai đoạn 3
   min_charuco_corners: 6
   max_reprojection_error_px: 1.5
+
+# THÊM MỚI: Logging schema
+logging:
+  enabled: true
+  format: csv
+  output_dir: results/logs
+  columns:
+    - timestamp
+    - frame_id
+    - session_id
+    - num_charuco_corners
+    - reproj_error_px
+    - camera_x_mm
+    - camera_y_mm
+    - camera_z_mm
+    - camera_pitch_deg
+    - camera_yaw_deg
+    - camera_roll_deg
+    - track_id
+    - class_name
+    - point_x_mm
+    - point_y_mm
+    - point_z_mm
+    - error_mm
+
