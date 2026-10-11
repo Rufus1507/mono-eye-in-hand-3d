@@ -5,6 +5,8 @@ Dùng lại phần hiệu chuẩn của fov_tool (board, detect, camera.yaml); k
 
 __version__ = "0.1.0"
 
+from mono_eye.chess_detectors import CHESS_PIECE_LABELS, ChessPieceDetector
+from mono_eye.chess_pipeline import ChessMonoEyePipeline, ChessResult
 from mono_eye.detect import Detection, DetectionResult, ObjectDetector
 from mono_eye.evaluate import (
     CSVLogger,
@@ -33,9 +35,13 @@ from mono_eye.viz import (
 )
 
 __all__ = [
+    "CHESS_PIECE_LABELS",
     "CSVLogger",
     "CameraPose",
     "CameraView",
+    "ChessMonoEyePipeline",
+    "ChessPieceDetector",
+    "ChessResult",
     "Detection",
     "DetectionResult",
     "ErrorAnalyzer",
