@@ -281,3 +281,41 @@ def test_pipeline_device_propagation(dummy_camera):
     )
     assert pipeline.detector.device == "cpu"
 
+
+def test_render_3d_viewport_chess():
+    """Kiểm tra render_3d_viewport_chess tạo canvas 3D chứa quân cờ."""
+    from scripts.realtime_chess_viz import render_3d_viewport_chess
+
+    cam_pos = np.array([120.0, 80.0, -400.0])
+    cam_rvec = np.array([0.1, 0.0, 0.0])
+    traj = [cam_pos]
+    pieces = [
+        {
+            "class_name": "white_knight",
+            "fen_char": "N",
+            "confidence": 0.88,
+            "position_3d": np.array([50.0, 60.0, 0.0]),
+        },
+        {
+            "class_name": "black_pawn",
+            "fen_char": "p",
+            "confidence": 0.75,
+            "position_3d": np.array([100.0, 80.0, 0.0]),
+        },
+    ]
+
+    canvas = render_3d_viewport_chess(
+        camera_pos=cam_pos,
+        camera_rvec=cam_rvec,
+        trajectory=traj,
+        chess_pieces=pieces,
+        width=640,
+        height=480,
+    )
+
+    assert canvas.shape == (480, 640, 3)
+    assert canvas.dtype == np.uint8
+    # Canvas không được trống rỗng/toàn màu đen
+    assert canvas.mean() > 20.0
+
+

@@ -13,11 +13,18 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+import time
 import cv2
 import numpy as np
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from mono_eye.pipeline import MonoEyePipeline
 from mono_eye.viz import SimpleVisualizer
+
 
 
 def render_3d_viewport(
@@ -216,9 +223,9 @@ def run_live(
     current_mirror = mirror
     rot_names = {0: "0°", 90: "90° (PHẢI)", 180: "180°", 270: "270° (TRÁI)"}
     print(f"▶ Mở camera {camera_id} (Xoay: {rot_names.get(current_rot, f'{current_rot}°')})...")
-    cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_id)
+        cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
     if not cap.isOpened():
         print(f"❌ Không thể mở camera #{camera_id}.")
         return
@@ -232,14 +239,21 @@ def run_live(
 
     print("=" * 70)
     print("🖥 ĐANG HIỂN THỊ CỬA SỔ DUY NHẤT: BÊN TRÁI LÀ CAMERA, BÊN PHẢI LÀ KHÔNG GIAN 3D")
-    print("▶ Phím [R]: Xoay góc | [M]: Lật gương | [Q]: Thoát")
+    print("▶ Phím [R]: Xoay góc | [C]: Đổi camera | [M]: Lật gương | [Q]: Thoát")
     print("=" * 70)
 
+    failed_count = 0
     try:
         while True:
             ret, frame = cap.read()
             if not ret or frame is None:
-                break
+                failed_count += 1
+                if failed_count > 30:
+                    print("❌ Mất tín hiệu từ camera.")
+                    break
+                time.sleep(0.01)
+                continue
+            failed_count = 0
 
             if current_rot == 90:
                 frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
@@ -278,10 +292,10 @@ def run_live(
             cv2.putText(cam_view, f"STATUS: {status_text}", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, status_col, 2)
             cv2.putText(
                 cam_view,
-                f"Rot: {rot_names.get(current_rot, f'{current_rot}°')} | [R]: Xoay | [M]: Mirror | [Q]: Thoat",
+                f"Rot: {rot_names.get(current_rot, f'{current_rot}°')} | [R]: Xoay | [C]: Doi Cam | [M]: Mirror | [Q]: Thoat",
                 (15, 465),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.42,
+                0.38,
                 (0, 255, 255),
                 1,
                 cv2.LINE_AA,
@@ -292,7 +306,7 @@ def run_live(
 
             cv2.imshow(window_name, dashboard)
             key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
+            if key in (ord("q"), ord("Q"), 27):
                 break
             elif key in (ord("r"), ord("R")):
                 current_rot = (current_rot + 90) % 360
@@ -300,6 +314,16 @@ def run_live(
             elif key in (ord("m"), ord("M")):
                 current_mirror = not current_mirror
                 print(f"🔄 Mirror: {'BẬT' if current_mirror else 'TẮT'}")
+            elif key in (ord("c"), ord("C")):
+                next_cam = 0 if camera_id == 1 else 1
+                print(f"🔄 Chuyển sang Camera #{next_cam}...")
+                cap.release()
+                camera_id = next_cam
+                cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(camera_id)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     finally:
         cap.release()
         cv2.destroyAllWindows()
@@ -311,34 +335,60 @@ def main():
     parser.add_argument("--camera-config", default="data/calib/camera.yaml", help="Path camera calibration YAML")
     parser.add_argument("--board-config", default="bang_calib_A4.yaml", help="Path ChArUco board YAML")
     parser.add_argument("--rotation", type=int, choices=(0, 90, 180, 270), default=None,
-                        help="Góc xoay (0, 90, 180, 270). Mặc định đọc configs/mono3d.yaml hoặc 90")
+                        help="Góc xoay (0, 90, 180, 270). Mặc định đọc configs/mono3d.yaml hoặc 0")
     parser.add_argument("--mirror", action="store_true", help="Bật lật gương (mặc định tắt)")
+    parser.add_argument("--model", default=None, help="Đường dẫn tới weights YOLO (ví dụ data/models/best25e_2712.pt)")
     args = parser.parse_args()
 
     cam_cfg = Path(args.camera_config)
+    if not cam_cfg.is_file():
+        alt_cam = ROOT / args.camera_config
+        if alt_cam.is_file():
+            cam_cfg = alt_cam
+
     board_cfg = Path(args.board_config)
+    if not board_cfg.is_file():
+        alt_board = ROOT / args.board_config
+        if alt_board.is_file():
+            board_cfg = alt_board
 
     rot = args.rotation
     if rot is None:
         cfg_path = Path("configs/mono3d.yaml")
-        if cfg_path.exists():
+        if not cfg_path.is_file():
+            alt_cfg = ROOT / "configs" / "mono3d.yaml"
+            if alt_cfg.is_file():
+                cfg_path = alt_cfg
+
+        if cfg_path.is_file():
             try:
                 import yaml
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     c = yaml.safe_load(f)
-                rot = int(c.get("camera", {}).get("rotation", 90))
+                rot = int(c.get("camera", {}).get("rotation", 0))
             except Exception:
-                rot = 90
+                rot = 0
         else:
-            rot = 90
+            rot = 0
 
     if not cam_cfg.exists() or not board_cfg.exists():
-        print("❌ Thiếu file cấu hình camera hoặc board. Vui lòng kiểm tra lại data/calib/camera.yaml!")
+        print(f"❌ Thiếu file cấu hình camera ({cam_cfg}) hoặc board ({board_cfg}). Vui lòng kiểm tra lại data/calib/camera.yaml!")
         return 1
+
+    detector_config = None
+    model_path = Path(args.model) if args.model else ROOT / "data" / "models" / "best25e_2712.pt"
+    if model_path.is_file():
+        detector_config = {
+            "model_path": str(model_path),
+            "conf_threshold": 0.4,
+            "tracking": False,
+        }
+        print(f"🤖 Đã nạp YOLO model: {model_path.name}")
 
     pipeline = MonoEyePipeline(
         camera_config=str(cam_cfg),
         board_config=str(board_cfg),
+        detector_config=detector_config,
     )
 
     run_live(pipeline, camera_id=args.camera, rotation=rot, mirror=args.mirror)
