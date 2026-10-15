@@ -337,7 +337,7 @@ def main():
     parser.add_argument("--rotation", type=int, choices=(0, 90, 180, 270), default=None,
                         help="Góc xoay (0, 90, 180, 270). Mặc định đọc configs/mono3d.yaml hoặc 0")
     parser.add_argument("--mirror", action="store_true", help="Bật lật gương (mặc định tắt)")
-    parser.add_argument("--model", default=None, help="Đường dẫn tới weights YOLO (ví dụ data/models/best25e_2712.pt)")
+    parser.add_argument("--model", default=None, help="Đường dẫn tới weights YOLO (ví dụ data/models/best.pt)")
     args = parser.parse_args()
 
     cam_cfg = Path(args.camera_config)
@@ -376,7 +376,7 @@ def main():
         return 1
 
     detector_config = None
-    model_path = Path(args.model) if args.model else ROOT / "data" / "models" / "best25e_2712.pt"
+    model_path = Path(args.model) if args.model else ROOT / "data" / "models" / "best.pt"
     if model_path.is_file():
         detector_config = {
             "model_path": str(model_path),

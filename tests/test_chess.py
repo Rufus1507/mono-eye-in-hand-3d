@@ -242,10 +242,10 @@ def test_chess_pipeline_visualization(dummy_camera, sample_pose):
 
 
 def test_real_weights_loading():
-    """Kiểm tra tải trọng số thực best25e_2712.pt từ data/models."""
-    weights_path = ROOT / "data" / "models" / "best25e_2712.pt"
+    """Kiểm tra tải trọng số thực best.pt từ data/models."""
+    weights_path = ROOT / "data" / "models" / "best.pt"
     if not weights_path.is_file():
-        pytest.skip("Chưa có file best25e_2712.pt")
+        pytest.skip("Chưa có file best.pt")
 
     try:
         detector = ChessPieceDetector(model_path=weights_path)

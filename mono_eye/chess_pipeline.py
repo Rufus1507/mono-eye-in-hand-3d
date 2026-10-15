@@ -80,11 +80,12 @@ class ChessMonoEyePipeline:
         camera_config: str | Path = "data/calib/camera.yaml",
         camera: Optional[CameraModel] = None,
         board_config: str | Path = "bang_calib_A4.yaml",
-        piece_model_path: str | Path = "data/models/best25e_2712.pt",
+        piece_model_path: str | Path = "data/models/best.pt",
         detector: Optional[ChessPieceDetector] = None,
         conf_threshold: float = 0.5,
         plane_z: float = 0.0,
         device: str = "auto",
+        max_reproj_error_px: float = 6.0,
     ):
         """Khởi tạo ChessMonoEyePipeline.
 
@@ -97,6 +98,7 @@ class ChessMonoEyePipeline:
             conf_threshold: Ngưỡng tin cậy nhận diện quân cờ (mặc định 0.5).
             plane_z: Cao độ mặt phẳng bàn chứa quân cờ (mm, mặc định 0.0).
             device: Thiết bị chạy inference ('auto', 'cuda', 'cpu').
+            max_reproj_error_px: Sai số tái chiếu tối đa (px, mặc định 6.0).
         """
         # 1. Nạp CameraModel
         if camera is not None:
@@ -113,6 +115,7 @@ class ChessMonoEyePipeline:
         self.pose_estimator = PoseEstimator(
             camera=self.camera,
             board_config=board_config,
+            max_reproj_error_px=max_reproj_error_px,
         )
 
         # 3. Khởi tạo ProjectionProcessor chiếu pixel sang 3D mặt phẳng plane_z

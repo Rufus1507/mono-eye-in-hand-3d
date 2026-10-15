@@ -16,7 +16,7 @@ from mono_eye.chess_pipeline import ChessMonoEyePipeline
 
 DEFAULT_CALIB = ROOT / "data" / "calib" / "camera.yaml"
 DEFAULT_BOARD = ROOT / "bang_calib_A4.yaml"
-DEFAULT_MODEL = ROOT / "data" / "models" / "best25e_2712.pt"
+DEFAULT_MODEL = ROOT / "data" / "models" / "best.pt"
 
 
 def find_working_camera(preferred: list[int] = (1, 0, 2)) -> int:

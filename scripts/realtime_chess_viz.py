@@ -29,7 +29,7 @@ from mono_eye.chess_pipeline import ChessMonoEyePipeline
 
 DEFAULT_CALIB = ROOT / "data" / "calib" / "camera.yaml"
 DEFAULT_BOARD = ROOT / "bang_calib_A4.yaml"
-DEFAULT_MODEL = ROOT / "data" / "models" / "best25e_2712.pt"
+DEFAULT_MODEL = ROOT / "data" / "models" / "best.pt"
 
 
 def render_3d_viewport_chess(
@@ -267,27 +267,151 @@ def render_3d_viewport_chess(
     return canvas
 
 
+def get_available_videos() -> list[tuple[str, Path]]:
+    """Lấy danh sách các video kiểm thử cờ vua có sẵn trong thư mục videochess."""
+    vdir = ROOT / "videochess"
+    if not vdir.is_dir():
+        return []
+    videos = sorted(list(vdir.glob("*.mp4")))
+    result = []
+    for v in videos:
+        name = v.name
+        if "340" in name:
+            label = "Video 1: Quân Tượng đen (Bishop)"
+        elif "349" in name:
+            label = "Video 2: Quân Mã đen (Knight)"
+        elif "357" in name:
+            label = "Video 3: Quân Hậu đen (Queen)"
+        elif "365" in name:
+            label = "Video 4: Quân Tốt đen (Pawn)"
+        else:
+            label = f"Video: {name[:24]}"
+        result.append((label, v))
+    return result
+
+
+def prompt_input_source(videos: list[tuple[str, Path]]) -> int | str:
+    """Hiển thị menu tương tác trên terminal cho phép người dùng chọn Camera hoặc Video."""
+    print("\n" + "=" * 70)
+    print("🎬 CHỌN NGUỒN ĐẦU VÀO CHO REALTIME CHESS 3D VISUALIZATION:")
+    print("=" * 70)
+    print("  [1] 📹 Camera trực tiếp #1 (DV20 USB Camera)")
+    print("  [2] 💻 Camera trực tiếp #0 (Webcam Laptop)")
+
+    idx_map: dict[str, int | str] = {"1": 1, "2": 0}
+    opt = 3
+    for label, vpath in videos:
+        print(f"  [{opt}] ♟️  {label}")
+        idx_map[str(opt)] = str(vpath)
+        opt += 1
+
+    custom_opt = opt
+    print(f"  [{custom_opt}] 📂 Nhập đường dẫn file video tùy ý (.mp4)")
+    print("-" * 70)
+    print(f"👉 Nhập lựa chọn [1 - {custom_opt}] (Hoặc nhấn Enter để chọn Camera #1): ", end="", flush=True)
+
+    try:
+        choice = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n▶ Mặc định chọn Camera #1.")
+        return 1
+
+    if not choice or choice == "1":
+        return 1
+    elif choice == "2":
+        return 0
+    elif choice in idx_map:
+        return idx_map[choice]
+    elif choice == str(custom_opt):
+        print("👉 Nhập đường dẫn file video: ", end="", flush=True)
+        try:
+            custom_p = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            return 1
+        if Path(custom_p).is_file():
+            return custom_p
+        alt = ROOT / custom_p
+        if alt.is_file():
+            return str(alt)
+        print(f"⚠ Không tìm thấy file: {custom_p}. Chuyển về mặc định Camera #1.")
+        return 1
+    else:
+        if Path(choice).is_file():
+            return choice
+        try:
+            return int(choice)
+        except ValueError:
+            print("⚠ Lựa chọn không hợp lệ. Mặc định chọn Camera #1.")
+            return 1
+
+
 def run_live(
     pipeline: ChessMonoEyePipeline,
-    camera_id: int = 1,
+    source: int | str | Path = 1,
     rotation: int = 0,
     mirror: bool = False,
+    loop: bool = True,
 ):
-    """Chạy vòng lặp camera thời gian thực và hiển thị song song 2D + 3D."""
+    """Chạy vòng lặp thời gian thực từ Camera hoặc file Video và hiển thị song song 2D + 3D."""
     current_rot = rotation % 360
     current_mirror = mirror
     rot_names = {0: "0°", 90: "90° (PHẢI)", 180: "180°", 270: "270° (TRÁI)"}
 
-    print(f"▶ Mở camera #{camera_id} (Xoay: {rot_names.get(current_rot, f'{current_rot}°')})...")
-    cap = cv2.VideoCapture(camera_id)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        print(f"❌ Không thể mở camera #{camera_id}.")
-        return
+    available_videos = get_available_videos()
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, pipeline.camera.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, pipeline.camera.height)
+    def open_stream(src):
+        is_vid = False
+        vid_p = None
+        label = ""
+        if isinstance(src, (str, Path)):
+            p = Path(src)
+            if not p.is_file():
+                alt = ROOT / src
+                if alt.is_file():
+                    p = alt
+            if p.is_file():
+                is_vid = True
+                vid_p = p
+                matched_label = next((l for l, vp in available_videos if vp.resolve() == p.resolve()), None)
+                label = matched_label or f"Video: {p.name[:24]}"
+            else:
+                try:
+                    src = int(src)
+                except ValueError:
+                    pass
+
+        if is_vid:
+            c = cv2.VideoCapture(str(vid_p))
+            if not c.isOpened():
+                return None, False, None, label
+            return c, True, vid_p, label
+        else:
+            cam_idx = int(src)
+            label = f"Camera #{cam_idx} ({'DV20 USB' if cam_idx == 1 else 'Webcam Laptop'})"
+            c = cv2.VideoCapture(cam_idx)
+            if not c.isOpened():
+                c = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+            if not c.isOpened():
+                return None, False, None, label
+            c.set(cv2.CAP_PROP_FRAME_WIDTH, pipeline.camera.width)
+            c.set(cv2.CAP_PROP_FRAME_HEIGHT, pipeline.camera.height)
+            return c, False, None, label
+
+    cap, is_video, video_path, current_label = open_stream(source)
+    if cap is None:
+        print(f"❌ Không thể mở nguồn phát ban đầu: {source}.")
+        if source == 1:
+            print("🔄 Đang thử kết nối Camera #0...")
+            source = 0
+            cap, is_video, video_path, current_label = open_stream(source)
+        if cap is None:
+            print("❌ Không thể mở bất kỳ nguồn phát nào.")
+            return
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if is_video else 0
+    video_fps = cap.get(cv2.CAP_PROP_FPS) if is_video else 30.0
+    if video_fps <= 0 or np.isnan(video_fps):
+        video_fps = 30.0
 
     trajectory: list[np.ndarray] = []
     window_name = "CHESS MONO EYE 3D - DIGITAL TWIN (Trai: Camera 2D | Phai: Khong gian 3D)"
@@ -295,23 +419,50 @@ def run_live(
 
     print("=" * 70)
     print("🖥 ĐANG HIỂN THỊ CỬA SỔ DUY NHẤT: BÊN TRÁI LÀ CAMERA, BÊN PHẢI LÀ KHÔNG GIAN 3D")
-    print("▶ Phím [R]: Xoay góc | [C]: Đổi camera | [M]: Lật gương | [Q]: Thoát")
+    print("▶ Phím tắt chuyển đổi nguồn phát & điều khiển:")
+    print("  - [1], [2], [3], [4]: Chuyển trực tiếp sang Video 1 - Video 4")
+    print("  - [C]: Chuyển sang Camera trực tiếp (toggle Camera 1 <-> 0)")
+    print("  - [V]: Chuyển sang Video tiếp theo trong danh sách")
+    print("  - [SPACE]: Tạm dừng / Tiếp tục phát video")
+    print("  - [R]: Phát lại video từ đầu / Đổi góc xoay camera")
+    print("  - [M]: Bật / tắt chế độ lật gương (Mirror)")
+    print("  - [Q] hoặc [ESC]: Thoát chương trình")
     print("=" * 70)
 
     prev_time = time.time()
     failed_count = 0
+    paused = False
+    last_frame = None
+    osd_msg = f"ĐANG CHẠY: {current_label}"
+    osd_expire = time.time() + 2.5
 
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                failed_count += 1
-                if failed_count > 30:
-                    print("❌ Mất tín hiệu từ camera.")
-                    break
-                time.sleep(0.01)
-                continue
-            failed_count = 0
+            if not paused:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    if is_video:
+                        if loop:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            trajectory.clear()
+                            continue
+                        else:
+                            print("🎬 Đã phát hết video.")
+                            break
+                    else:
+                        failed_count += 1
+                        if failed_count > 30:
+                            print("❌ Mất tín hiệu từ camera.")
+                            break
+                        time.sleep(0.01)
+                        continue
+                failed_count = 0
+                last_frame = frame.copy()
+            else:
+                if last_frame is None:
+                    time.sleep(0.05)
+                    continue
+                frame = last_frame.copy()
 
             # Tính FPS
             now = time.time()
@@ -351,52 +502,158 @@ def run_live(
 
             # Chuẩn bị khung 2D camera (resize sang 640x480 để khớp chiều cao)
             cam_view = cv2.resize(vis_2d, (640, 480))
-            status_text = f"TRACKING OK ({result.pose.num_corners} pts)" if result.pose.valid else "SEARCHING CHARUCO..."
-            status_col = (0, 255, 0) if result.pose.valid else (0, 165, 255)
-            cv2.putText(cam_view, f"STATUS: {status_text}", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, status_col, 2)
-            cv2.putText(
-                cam_view,
-                f"FPS: {fps:.1f} | Pieces: {result.num_pieces} (3D: {len(result.valid_pieces)})",
-                (15, 55),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.50,
-                (255, 255, 0),
-                2,
-            )
-            cv2.putText(
-                cam_view,
-                f"Rot: {rot_names.get(current_rot, f'{current_rot}°')} | [R]: Xoay | [C]: Doi Cam | [M]: Mirror | [Q]: Thoat",
-                (15, 465),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.36,
-                (0, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
+
+            # 1. Header Bar trên 2D Camera View (Hiệu ứng kính mờ tối sang trọng)
+            overlay = cam_view.copy()
+            cv2.rectangle(overlay, (0, 0), (640, 42), (18, 18, 18), -1)
+            cv2.addWeighted(overlay, 0.75, cam_view, 0.25, 0, cam_view)
+
+            # Badge nguồn phát
+            if is_video:
+                cur_f = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                badge_text = "▶ VIDEO"
+                cv2.putText(cam_view, badge_text, (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 200, 0), 2, cv2.LINE_AA)
+                cv2.putText(cam_view, f"{current_label} [{cur_f}/{total_frames}]", (90, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (240, 240, 240), 1, cv2.LINE_AA)
+            else:
+                dot_color = (0, 255, 120) if (int(now * 2) % 2 == 0) else (0, 200, 80)
+                cv2.circle(cam_view, (20, 22), 5, dot_color, -1, cv2.LINE_AA)
+                cv2.putText(cam_view, "LIVE CAMERA", (32, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 120), 2, cv2.LINE_AA)
+                cv2.putText(cam_view, f"[{current_label}]", (145, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1, cv2.LINE_AA)
+
+            # FPS và Device bên phải Header
+            dev_str = "CUDA" if "cuda" in str(pipeline.detector.device).lower() else "CPU"
+            cv2.putText(cam_view, f"{fps:.1f} FPS | {dev_str}", (520, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 230, 255), 1, cv2.LINE_AA)
+
+            # 2. Sub-header Status Pill (Báo trạng thái bám vết ChArUco & nhận diện quân cờ)
+            if result.pose.valid:
+                cv2.rectangle(cam_view, (10, 48), (630, 74), (20, 45, 20), -1)
+                cv2.rectangle(cam_view, (10, 48), (630, 74), (0, 220, 100), 1)
+                st_msg = f"✓ CHARUCO OK ({result.pose.num_corners} pts | err={result.pose.reproj_error_px:.1f}px) | Quan co 3D: {len(result.valid_pieces)}/{result.num_pieces}"
+                cv2.putText(cam_view, st_msg, (18, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 120), 1, cv2.LINE_AA)
+            else:
+                cv2.rectangle(cam_view, (10, 48), (630, 74), (20, 25, 45), -1)
+                cv2.rectangle(cam_view, (10, 48), (630, 74), (0, 140, 255), 1)
+                st_msg = "⚠ TIM KIEM BAN CO CHARUCO A4... (Vui long dua ban co vao khung hinh)"
+                cv2.putText(cam_view, st_msg, (18, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 165, 255), 1, cv2.LINE_AA)
+
+            # 3. Video Progress Bar (Nếu đang phát video)
+            if is_video and total_frames > 0:
+                prog_w = int(640 * cur_f / max(1, total_frames))
+                cv2.rectangle(cam_view, (0, 442), (640, 446), (40, 40, 40), -1)
+                cv2.rectangle(cam_view, (0, 442), (prog_w, 446), (255, 215, 0), -1)
+
+            # 4. Footer Toolbar Overlay
+            overlay_bot = cam_view.copy()
+            cv2.rectangle(overlay_bot, (0, 448), (640, 480), (18, 18, 18), -1)
+            cv2.addWeighted(overlay_bot, 0.80, cam_view, 0.20, 0, cam_view)
+
+            if is_video:
+                foot_ctl = "[1-4]: Chon Video | [C]: Cam Live | [V]: Video tiep | [Space]: Dung | [R]: Phat lai | [Q]: Thoat"
+            else:
+                foot_ctl = f"[C]: Doi Cam | [1-4]: Chon Video | [R]: Xoay ({rot_names.get(current_rot, f'{current_rot}')}) | [M]: Mirror | [Q]: Thoat"
+            cv2.putText(cam_view, foot_ctl, (12, 469), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (220, 220, 220), 1, cv2.LINE_AA)
+
+            # 5. OSD Popup Banner (Hiển thị khi chuyển nguồn hoặc thao tác phím)
+            if time.time() < osd_expire and osd_msg:
+                box_w, box_h = 460, 44
+                bx1, by1 = (640 - box_w) // 2, 218
+                overlay_osd = cam_view.copy()
+                cv2.rectangle(overlay_osd, (bx1, by1), (bx1 + box_w, by1 + box_h), (20, 20, 20), -1)
+                cv2.addWeighted(overlay_osd, 0.85, cam_view, 0.15, 0, cam_view)
+                cv2.rectangle(cam_view, (bx1, by1), (bx1 + box_w, by1 + box_h), (0, 230, 255), 2)
+                (tw, th), _ = cv2.getTextSize(osd_msg, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+                tx = bx1 + (box_w - tw) // 2
+                ty = by1 + (box_h + th) // 2
+                cv2.putText(cam_view, osd_msg, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1, cv2.LINE_AA)
 
             # Ghép đôi 2D Camera và 3D Space cạnh nhau thành 1 Dashboard duy nhất (1280 x 480)
             dashboard = np.hstack([cam_view, view_3d])
 
             cv2.imshow(window_name, dashboard)
-            key = cv2.waitKey(1) & 0xFF
+            wait_delay = 30 if paused else max(1, int(1000 / video_fps)) if is_video else 1
+            key = cv2.waitKey(wait_delay) & 0xFF
+
             if key in (ord("q"), ord("Q"), 27):
                 break
+            elif key == ord(" "):
+                paused = not paused
+                osd_msg = "TẠM DỪNG VIDEO" if paused else "TIẾP TỤC PHÁT"
+                osd_expire = time.time() + 1.5
             elif key in (ord("r"), ord("R")):
-                current_rot = (current_rot + 90) % 360
-                print(f"🔄 Đổi góc xoay: {rot_names.get(current_rot, f'{current_rot}°')}")
+                if is_video:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    trajectory.clear()
+                    osd_msg = "PHÁT LẠI VIDEO TỪ ĐẦU"
+                    osd_expire = time.time() + 1.5
+                    print("🔄 Phát lại video từ đầu...")
+                else:
+                    current_rot = (current_rot + 90) % 360
+                    osd_msg = f"ĐỔI GÓC XOAY: {rot_names.get(current_rot, f'{current_rot}°')}"
+                    osd_expire = time.time() + 1.5
+                    print(f"🔄 Đổi góc xoay: {rot_names.get(current_rot, f'{current_rot}°')}")
             elif key in (ord("m"), ord("M")):
                 current_mirror = not current_mirror
+                osd_msg = f"MIRROR: {'BẬT' if current_mirror else 'TẮT'}"
+                osd_expire = time.time() + 1.5
                 print(f"🔄 Mirror: {'BẬT' if current_mirror else 'TẮT'}")
             elif key in (ord("c"), ord("C")):
-                next_cam = 0 if camera_id == 1 else 1
-                print(f"🔄 Chuyển sang Camera #{next_cam}...")
-                cap.release()
-                camera_id = next_cam
-                cap = cv2.VideoCapture(camera_id)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, pipeline.camera.width)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, pipeline.camera.height)
+                # Chuyển đổi giữa Camera 1 và Camera 0
+                next_cam = 0 if (not is_video and source == 1) else 1
+                new_cap, new_is_vid, new_vid_p, new_lbl = open_stream(next_cam)
+                if new_cap is not None:
+                    cap.release()
+                    cap, is_video, video_path, current_label = new_cap, new_is_vid, new_vid_p, new_lbl
+                    source = next_cam
+                    trajectory.clear()
+                    paused = False
+                    total_frames = 0
+                    video_fps = 30.0
+                    osd_msg = f"ĐÃ CHUYỂN: {current_label}"
+                    osd_expire = time.time() + 2.5
+                    print(f"🔄 Đã chuyển sang: {current_label}")
+                else:
+                    osd_msg = f"LỖI: Không thể mở Camera #{next_cam}"
+                    osd_expire = time.time() + 2.0
+                    print(f"❌ Không thể mở Camera #{next_cam}")
+            elif key in (ord("v"), ord("V")):
+                # Chuyển vòng lặp sang video tiếp theo trong danh sách
+                if available_videos:
+                    cur_idx = -1
+                    if is_video and video_path is not None:
+                        for idx, (_, vp) in enumerate(available_videos):
+                            if vp.resolve() == video_path.resolve():
+                                cur_idx = idx
+                                break
+                    next_idx = (cur_idx + 1) % len(available_videos)
+                    next_vid_path = available_videos[next_idx][1]
+                    new_cap, new_is_vid, new_vid_p, new_lbl = open_stream(next_vid_path)
+                    if new_cap is not None:
+                        cap.release()
+                        cap, is_video, video_path, current_label = new_cap, new_is_vid, new_vid_p, new_lbl
+                        source = next_vid_path
+                        trajectory.clear()
+                        paused = False
+                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                        osd_msg = f"ĐÃ CHUYỂN: {current_label}"
+                        osd_expire = time.time() + 2.5
+                        print(f"🔄 Đã chuyển sang: {current_label}")
+            elif key in (ord("1"), ord("2"), ord("3"), ord("4")):
+                target_idx = int(chr(key)) - 1
+                if target_idx < len(available_videos):
+                    target_vid = available_videos[target_idx][1]
+                    new_cap, new_is_vid, new_vid_p, new_lbl = open_stream(target_vid)
+                    if new_cap is not None:
+                        cap.release()
+                        cap, is_video, video_path, current_label = new_cap, new_is_vid, new_vid_p, new_lbl
+                        source = target_vid
+                        trajectory.clear()
+                        paused = False
+                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                        osd_msg = f"ĐÃ CHUYỂN: {current_label}"
+                        osd_expire = time.time() + 2.5
+                        print(f"🔄 Đã chuyển sang: {current_label}")
     finally:
         cap.release()
         cv2.destroyAllWindows()
@@ -404,16 +661,22 @@ def run_live(
 
 def main():
     parser = argparse.ArgumentParser(description="Realtime 3D Visualization cho Chess Mono Eye 3D")
-    parser.add_argument("--camera", type=int, default=1, help="Camera device ID (mặc định 1)")
+    parser.add_argument("--source", default=None, help="Camera index (ví dụ: 0, 1) HOẶC đường dẫn file video (.mp4)")
+    parser.add_argument("--video", default=None, help="Đường dẫn file video chạy thử nghiệm")
+    parser.add_argument("--camera", type=int, default=None, help="Camera device ID (ví dụ: 0 hoặc 1)")
     parser.add_argument("--camera-config", default=str(DEFAULT_CALIB), help="Path camera calibration YAML")
     parser.add_argument("--board-config", default=str(DEFAULT_BOARD), help="Path ChArUco board YAML")
     parser.add_argument("--model", default=str(DEFAULT_MODEL), help="Path YOLO chess model (.pt)")
     parser.add_argument("--conf", type=float, default=0.4, help="Ngưỡng tin cậy YOLO (mặc định 0.4)")
     parser.add_argument("--device", default="auto", help="Inference device: 'auto', 'cuda', 'cuda:0', 'cpu'")
     parser.add_argument("--plane-z", type=float, default=0.0, help="Cao độ mặt phẳng bàn Z (mm)")
+    parser.add_argument("--max-reproj", type=float, default=6.0, help="Sai số tái chiếu tối đa (px, mặc định 6.0)")
     parser.add_argument("--rotation", type=int, choices=(0, 90, 180, 270), default=None,
                         help="Góc xoay (0, 90, 180, 270). Mặc định đọc configs/mono3d.yaml hoặc 0")
     parser.add_argument("--mirror", action="store_true", help="Bật lật gương (mặc định tắt)")
+    parser.add_argument("--loop", action="store_true", default=True, help="Tự động lặp lại video khi hết (mặc định bật)")
+    parser.add_argument("--no-loop", dest="loop", action="store_false", help="Không lặp lại video")
+    parser.add_argument("--menu", action="store_true", help="Luôn hiển thị menu tương tác chọn nguồn đầu vào")
     args = parser.parse_args()
 
     cam_cfg = Path(args.camera_config)
@@ -455,13 +718,27 @@ def main():
         print(f"❌ Thiếu file cấu hình bảng ChArUco: {board_cfg}")
         return 1
 
+    # Tìm danh sách video có sẵn
+    available_videos = get_available_videos()
+
+    # Xác định nguồn phát (source/video/camera hoặc hiển thị menu tương tác)
+    source_input = args.source or args.video
+    if source_input is None and args.camera is not None:
+        source_input = args.camera
+
+    if source_input is None or args.menu:
+        # Hiển thị menu cho phép chọn trực tiếp Camera hoặc Video
+        source_input = prompt_input_source(available_videos)
+
     print("=" * 70)
     print("KHỞI TẠO REALTIME CHESS 3D VISUALIZATION PIPELINE")
+    print(f"Nguồn phát (Source): {source_input}")
     print(f"Camera Calibration: {cam_cfg}")
     print(f"ChArUco Board:      {board_cfg}")
     print(f"YOLO Model:         {model_path} ({'Tìm thấy' if model_path.is_file() else 'Không thấy'})")
     print(f"Device:             {args.device}")
     print(f"Confidence:         {args.conf}")
+    print(f"Max Reproj Error:   {args.max_reproj} px")
     print("=" * 70)
 
     pipeline = ChessMonoEyePipeline(
@@ -471,11 +748,19 @@ def main():
         conf_threshold=args.conf,
         plane_z=args.plane_z,
         device=args.device,
+        max_reproj_error_px=args.max_reproj,
     )
 
-    run_live(pipeline, camera_id=args.camera, rotation=rot, mirror=args.mirror)
+    run_live(
+        pipeline,
+        source=source_input,
+        rotation=rot,
+        mirror=args.mirror,
+        loop=args.loop,
+    )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

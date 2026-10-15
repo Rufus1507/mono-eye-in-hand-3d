@@ -41,11 +41,11 @@ CHESS_PIECE_LABELS: dict[str, str] = {
 
 
 class ChessPieceDetector:
-    """Bộ phát hiện quân cờ dựa trên mô hình YOLO chuyên dụng (ví dụ: best25e_2712.pt)."""
+    """Bộ phát hiện quân cờ dựa trên mô hình YOLO chuyên dụng (ví dụ: best.pt)."""
 
     def __init__(
         self,
-        model_path: str | Path = "data/models/best25e_2712.pt",
+        model_path: str | Path = "data/models/best.pt",
         conf_threshold: float = 0.5,
         iou_threshold: float = 0.5,
         model: Any = None,
