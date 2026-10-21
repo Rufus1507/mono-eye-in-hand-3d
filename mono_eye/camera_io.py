@@ -23,6 +23,27 @@ class CameraModel:
                 f"Khung hình {w}x{h} nhưng camera được hiệu chuẩn ở {self.width}x{self.height}"
             )
 
+    def scale_to(self, new_width: int, new_height: int) -> CameraModel:
+        """Co giãn ma trận K tương ứng khi thay đổi độ phân giải ảnh."""
+        # Trường hợp đổi hướng khung hình (Landscape <-> Portrait, ví dụ 1280x720 <-> 720x1280)
+        if (new_width, new_height) == (self.height, self.width):
+            f = (self.K[0, 0] + self.K[1, 1]) / 2.0
+            new_K = np.array([
+                [f, 0.0, float(new_width) / 2.0],
+                [0.0, f, float(new_height) / 2.0],
+                [0.0, 0.0, 1.0],
+            ], dtype=np.float64)
+            return CameraModel(K=new_K, dist=self.dist.copy(), width=int(new_width), height=int(new_height))
+
+        sx = float(new_width) / float(self.width)
+        sy = float(new_height) / float(self.height)
+        new_K = self.K.copy().astype(np.float64)
+        new_K[0, 0] *= sx
+        new_K[0, 2] = float(new_width) / 2.0
+        new_K[1, 1] *= sy
+        new_K[1, 2] = float(new_height) / 2.0
+        return CameraModel(K=new_K, dist=self.dist.copy(), width=int(new_width), height=int(new_height))
+
 
 def load_camera_yaml(path: str | Path) -> CameraModel:
     # Đọc nội dung bằng Python rồi đưa cho OpenCV dạng chuỗi: tránh việc cv2.FileStorage mở file

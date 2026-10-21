@@ -8,6 +8,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+import yaml
 
 from fov_tool.board import BoardSpec, load_board
 from mono_eye.camera_io import CameraModel
@@ -33,6 +34,7 @@ class CameraPose:
     num_corners: int = 0
     reproj_error_px: float = float("inf")
     timestamp: float = 0.0
+    board_type: str = "charuco"
 
     @property
     def rotation_matrix(self) -> Optional[np.ndarray]:
@@ -264,3 +266,296 @@ class PoseEstimator:
 
         # 4. Ước lượng pose từ corners đã phát hiện
         return self.estimate_from_corners(charuco_corners, charuco_ids, timestamp=t0)
+
+
+class ChessboardPoseEstimator:
+    """Camera pose estimator từ bàn cờ 8x8 với 32 ArUco markers (theo banco_8x8.yaml)."""
+
+    def __init__(
+        self,
+        camera: CameraModel,
+        board_config: str | Path = "configs/banco_8x8.yaml",
+        min_markers: int = 2,
+        max_reproj_error_px: float = 6.0,
+        max_hold_frames: int = 5,
+        solve_pnp_flags: int = cv2.SOLVEPNP_SQPNP,
+    ):
+        """Khởi tạo ChessboardPoseEstimator.
+
+        Args:
+            camera: CameraModel với K và dist.
+            board_config: Đường dẫn file cấu hình YAML của bàn cờ 8x8.
+            min_markers: Số marker tối thiểu để giải Pose (mặc định 2).
+            max_reproj_error_px: Sai số tái chiếu tối đa (px).
+            max_hold_frames: Số khung hình tối đa giữ lại Pose cũ khi bàn cờ bị che khuất.
+            solve_pnp_flags: Cờ phương pháp solvePnPRansac.
+        """
+        self.camera = camera
+        self.min_markers = min_markers
+        self.max_reproj_error = max_reproj_error_px
+        self.max_hold_frames = max_hold_frames
+        self.solve_pnp_flags = solve_pnp_flags
+
+        cfg_path = Path(board_config)
+        if not cfg_path.is_file():
+            alt_path = ROOT / board_config
+            if alt_path.is_file():
+                cfg_path = alt_path
+
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+
+        bang = cfg.get("bang", {})
+        self.square_size_mm = float(bang.get("canh_o_mm", 40.0))
+        self.marker_size_mm = float(bang.get("marker_mm", 24.0))
+        dict_name = "DICT_" + str(bang.get("tu_dien", "4X4_50"))
+
+        if not hasattr(cv2.aruco, dict_name):
+            raise ValueError(f"OpenCV không có từ điển {dict_name}")
+        self.dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
+        self.detector_params = cv2.aruco.DetectorParameters()
+        self.detector_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self.detector_params.cornerRefinementWinSize = 5
+        self.detector_params.cornerRefinementMaxIterations = 30
+        self.detector_params.cornerRefinementMinAccuracy = 0.05
+        self.detector = cv2.aruco.ArucoDetector(self.dictionary, self.detector_params)
+
+        # Tính toán tọa độ 3D danh nghĩa cho 4 góc của từng marker
+        offset = (self.square_size_mm - self.marker_size_mm) / 2.0
+        self.marker_3d_map: dict[int, np.ndarray] = {}
+        self.marker_info: dict[int, dict] = {}
+
+        raw_markers = cfg.get("markers", {})
+        for mid, m_info in raw_markers.items():
+            mid_int = int(mid)
+            c_idx = int(m_info["col_idx"])
+            r_idx = int(m_info["row_idx"])
+            rot = int(m_info.get("rot_deg", 0))
+
+            sq_x = c_idx * self.square_size_mm
+            sq_y = r_idx * self.square_size_mm
+
+            # Thứ tự 4 góc theo chiều kim đồng hồ (TL -> TR -> BR -> BL)
+            canon = np.array([
+                [sq_x + offset, sq_y + offset + self.marker_size_mm, 0.0],
+                [sq_x + offset + self.marker_size_mm, sq_y + offset + self.marker_size_mm, 0.0],
+                [sq_x + offset + self.marker_size_mm, sq_y + offset, 0.0],
+                [sq_x + offset, sq_y + offset, 0.0],
+            ], dtype=np.float64)
+
+            shift = (rot // 90) % 4
+            self.marker_3d_map[mid_int] = np.roll(canon, -shift, axis=0)
+            self.marker_info[mid_int] = m_info
+
+        self.last_valid_pose: Optional[CameraPose] = None
+        self.hold_count: int = 0
+        self.smooth_rvec: Optional[np.ndarray] = None
+        self.smooth_tvec: Optional[np.ndarray] = None
+
+    def reset(self) -> None:
+        """Đặt lại bộ lọc làm mượt và bộ đếm giữ pose."""
+        self.last_valid_pose = None
+        self.hold_count = 0
+        self.smooth_rvec = None
+        self.smooth_tvec = None
+
+    def estimate(self, frame: np.ndarray, timestamp: Optional[float] = None) -> CameraPose:
+        """Ước lượng camera pose từ bàn cờ 8x8 với RANSAC + LM Refinement và Temporal Filter."""
+        t0 = time.perf_counter() if timestamp is None else timestamp
+        if frame is None or frame.size == 0:
+            return CameraPose(valid=False, timestamp=t0, board_type="chessboard_8x8")
+
+        # Tự động co giãn K nếu độ phân giải khung hình khác cấu hình camera
+        fh, fw = frame.shape[:2]
+        if (fw, fh) != (self.camera.width, self.camera.height):
+            self.camera = self.camera.scale_to(fw, fh)
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+
+        corners, ids, _ = self.detector.detectMarkers(gray)
+
+        if ids is not None and len(ids) > 0:
+            obj_pts_list = []
+            img_pts_list = []
+
+            for i, mid in enumerate(ids.flatten()):
+                mid_int = int(mid)
+                if mid_int in self.marker_3d_map:
+                    obj_pts_list.append(self.marker_3d_map[mid_int])
+                    img_pts_list.append(corners[i][0])
+
+            if len(obj_pts_list) >= self.min_markers:
+                obj_pts = np.vstack(obj_pts_list).astype(np.float64)
+                img_pts = np.vstack(img_pts_list).astype(np.float64)
+
+                res_scale = max(1.0, float(self.camera.height) / 720.0)
+                effective_thresh = max(6.0, self.max_reproj_error * res_scale)
+
+                success, rvec, tvec, inliers = cv2.solvePnPRansac(
+                    objectPoints=obj_pts,
+                    imagePoints=img_pts,
+                    cameraMatrix=self.camera.K,
+                    distCoeffs=self.camera.dist,
+                    flags=self.solve_pnp_flags,
+                    reprojectionError=effective_thresh,
+                )
+
+                if (
+                    success
+                    and rvec is not None
+                    and tvec is not None
+                    and inliers is not None
+                    and len(inliers) >= 4
+                ):
+                    inlier_idx = inliers.flatten()
+                    obj_inliers = obj_pts[inlier_idx]
+                    img_inliers = img_pts[inlier_idx]
+
+                    # Tinh chỉnh phi tuyến Levenberg-Marquardt trên toàn bộ inliers
+                    try:
+                        rvec_ref, tvec_ref = cv2.solvePnPRefineLM(
+                            obj_inliers,
+                            img_inliers,
+                            self.camera.K,
+                            self.camera.dist,
+                            rvec,
+                            tvec,
+                        )
+                    except Exception:
+                        rvec_ref, tvec_ref = rvec, tvec
+
+                    rvec_flat = rvec_ref.reshape(-1)
+                    tvec_flat = tvec_ref.reshape(-1)
+
+                    # Bộ lọc làm mượt chuyển động thích ứng (Adaptive Temporal Pose Filter)
+                    if self.smooth_rvec is None or self.smooth_tvec is None:
+                        self.smooth_rvec = rvec_flat.copy()
+                        self.smooth_tvec = tvec_flat.copy()
+                    else:
+                        d_t = float(np.linalg.norm(tvec_flat - self.smooth_tvec))
+                        # Khi camera đứng yên hoặc di chuyển rất chậm: lọc mạnh (alpha=0.35) triệt tiêu rung giật
+                        # Khi camera di chuyển nhanh: tăng alpha (lên tới 0.85) để bám bắt tức thời không trễ
+                        if d_t < 15.0:
+                            alpha = 0.35
+                        elif d_t <= 60.0:
+                            alpha = 0.35 + (d_t - 15.0) / 45.0 * 0.45
+                        else:
+                            alpha = 0.85
+
+                        # Kiểm tra chống nhảy cực đoan (outlier jump) do nhiễu ánh sáng
+                        if d_t > 90.0 and len(inliers) < 8:
+                            # Giữ pose cũ, không cập nhật bước nhảy bất thường
+                            rvec_flat = self.smooth_rvec
+                            tvec_flat = self.smooth_tvec
+                        else:
+                            self.smooth_tvec = alpha * tvec_flat + (1.0 - alpha) * self.smooth_tvec
+                            self.smooth_rvec = alpha * rvec_flat + (1.0 - alpha) * self.smooth_rvec
+
+                    active_rvec = self.smooth_rvec
+                    active_tvec = self.smooth_tvec
+
+                    projected, _ = cv2.projectPoints(
+                        obj_inliers, active_rvec, active_tvec, self.camera.K, self.camera.dist
+                    )
+                    errors = np.linalg.norm(
+                        projected.reshape(-1, 2) - img_inliers.reshape(-1, 2), axis=1
+                    )
+                    reproj_error = float(np.sqrt(np.mean(errors ** 2)))
+
+                    self.hold_count = 0
+                    self.last_valid_pose = CameraPose(
+                        valid=True,
+                        rvec=active_rvec,
+                        tvec=active_tvec,
+                        num_corners=len(inlier_idx),
+                        reproj_error_px=reproj_error,
+                        timestamp=t0,
+                        board_type="chessboard_8x8",
+                    )
+                    return self.last_valid_pose
+
+        # Pose Hold khi bị che khuất tạm thời bởi tay người hoặc quân cờ
+        if self.last_valid_pose is not None and self.hold_count < self.max_hold_frames:
+            self.hold_count += 1
+            return CameraPose(
+                valid=True,
+                rvec=self.last_valid_pose.rvec,
+                tvec=self.last_valid_pose.tvec,
+                num_corners=self.last_valid_pose.num_corners,
+                reproj_error_px=self.last_valid_pose.reproj_error_px,
+                timestamp=t0,
+                board_type="chessboard_8x8",
+            )
+
+        return CameraPose(valid=False, num_corners=0, timestamp=t0, board_type="chessboard_8x8")
+
+
+class UnifiedPoseEstimator:
+    """Bộ ước lượng Pose đa năng hỗ trợ song song cả Bảng ChArUco và Bàn cờ 8x8."""
+
+    def __init__(
+        self,
+        camera: CameraModel,
+        mode: str = "auto",
+        charuco_config: str | Path = "bang_calib_A4.yaml",
+        chessboard_config: str | Path = "configs/banco_8x8.yaml",
+        max_reproj_error_px: float = 6.0,
+    ):
+        """Khởi tạo UnifiedPoseEstimator.
+
+        Args:
+            camera: CameraModel.
+            mode: Chế độ nhận diện ('auto', 'charuco', 'chessboard').
+            charuco_config: Đường dẫn file cấu hình ChArUco.
+            chessboard_config: Đường dẫn file cấu hình Bàn cờ 8x8.
+            max_reproj_error_px: Sai số tái chiếu tối đa (px).
+        """
+        self.camera = camera
+        self.mode = str(mode).lower()
+        self.max_reproj_error_px = max_reproj_error_px
+
+        self.charuco_estimator = PoseEstimator(
+            camera=camera,
+            board_config=charuco_config,
+            max_reproj_error_px=max_reproj_error_px,
+        )
+
+        self.chessboard_estimator = ChessboardPoseEstimator(
+            camera=camera,
+            board_config=chessboard_config,
+            max_reproj_error_px=max_reproj_error_px,
+        )
+
+    def estimate(self, frame: np.ndarray, timestamp: Optional[float] = None) -> CameraPose:
+        """Ước lượng Pose từ khung hình dựa trên chế độ cấu hình."""
+        if self.mode in ("charuco", "charuco_board"):
+            return self.charuco_estimator.estimate(frame, timestamp)
+
+        if self.mode in ("chessboard", "chessboard_8x8", "banco"):
+            return self.chessboard_estimator.estimate(frame, timestamp)
+
+        # Chế độ "auto": Tự động phát hiện loại bảng trong khung hình
+        chess_pose = self.chessboard_estimator.estimate(frame, timestamp)
+        charuco_pose = self.charuco_estimator.estimate(frame, timestamp)
+
+        if chess_pose.valid and not charuco_pose.valid:
+            return chess_pose
+        if charuco_pose.valid and not chess_pose.valid:
+            return charuco_pose
+        if chess_pose.valid and charuco_pose.valid:
+            # Nếu cả 2 đều hợp lệ, chọn pose có sai số tái chiếu nhỏ hơn
+            if chess_pose.reproj_error_px <= charuco_pose.reproj_error_px:
+                return chess_pose
+            return charuco_pose
+
+        if chess_pose.num_corners > charuco_pose.num_corners:
+            return chess_pose
+        if charuco_pose.num_corners > chess_pose.num_corners:
+            return charuco_pose
+
+        return CameraPose(
+            valid=False,
+            timestamp=time.perf_counter() if timestamp is None else timestamp,
+            board_type="unknown",
+        )
+

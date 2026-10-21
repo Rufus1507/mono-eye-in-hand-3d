@@ -1,12 +1,15 @@
 """Mô-đun phát hiện quân cờ bằng mô hình YOLO cho mono_eye."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Optional, Sequence
 import cv2
 import numpy as np
 
 from mono_eye.config import ROOT
+
+logger = logging.getLogger(__name__)
 
 try:
     from ultralytics import YOLO
@@ -48,6 +51,7 @@ class ChessPieceDetector:
         model_path: str | Path = "data/models/best.pt",
         conf_threshold: float = 0.5,
         iou_threshold: float = 0.5,
+        imgsz: int = 480,
         model: Any = None,
         device: str = "auto",
     ):
@@ -57,12 +61,14 @@ class ChessPieceDetector:
             model_path: Đường dẫn tới file trọng số mô hình (.pt hoặc .onnx).
             conf_threshold: Ngưỡng độ tin cậy để nhận diện quân cờ (mặc định 0.5).
             iou_threshold: Ngưỡng IoU cho NMS (mặc định 0.5).
+            imgsz: Kích thước ảnh đầu vào cho mô hình YOLO (mặc định 480 để tối ưu tốc độ CPU).
             model: Instance model đã tải sẵn (hoặc mock model dùng cho testing).
             device: Thiết bị chạy inference ('auto', 'cuda', 'cuda:0', 'cpu').
         """
         self.model_path = Path(model_path) if model_path is not None else None
         self.conf_threshold = float(conf_threshold)
         self.iou_threshold = float(iou_threshold)
+        self.imgsz = int(imgsz) if imgsz is not None else 480
         self._model = model
 
         # Tự động phát hiện và chọn thiết bị tốt nhất
@@ -127,11 +133,19 @@ class ChessPieceDetector:
         if frame is None or frame.size == 0:
             return []
 
+        if not HAS_ULTRALYTICS and self._model is None:
+            if not getattr(self, "_warned_ultralytics", False):
+                logger.warning("Thư viện 'ultralytics' chưa được cài đặt. Bỏ qua nhận diện quân cờ YOLO.")
+                self._warned_ultralytics = True
+            return []
+
         kwargs: dict[str, Any] = {
             "conf": self.conf_threshold,
             "iou": self.iou_threshold,
             "verbose": False,
         }
+        if getattr(self, "imgsz", None):
+            kwargs["imgsz"] = self.imgsz
         if getattr(self, "device", None):
             kwargs["device"] = self.device
 

@@ -4,10 +4,16 @@ import cv2
 import numpy as np
 
 
+def _undistort_iter(p, K, D, criteria):
+    if hasattr(cv2, "undistortPointsIter"):
+        return cv2.undistortPointsIter(p, K, D, None, None, criteria)
+    return cv2.undistortPoints(p, K, D, criteria=criteria)
+
+
 def _ray(points, K, D):
     p = np.asarray(points, np.float64).reshape(-1, 1, 2)
-    q = cv2.undistortPointsIter(
-        p, np.asarray(K, np.float64), np.asarray(D, np.float64), None, None,
+    q = _undistort_iter(
+        p, np.asarray(K, np.float64), np.asarray(D, np.float64),
         (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 100, 1e-12),
     ).reshape(-1, 2)
     rays = np.column_stack((q, np.ones(len(q))))
@@ -48,8 +54,8 @@ def distortion_health(K, D, width: int, height: int, grid: int = 31) -> dict:
     xs = np.linspace(-.5, width - .5, grid)
     ys = np.linspace(-.5, height - .5, grid)
     pixels = np.array([(x, y) for y in ys for x in xs], np.float64).reshape(-1, 1, 2)
-    rays = cv2.undistortPointsIter(
-        pixels, K, D, None, None,
+    rays = _undistort_iter(
+        pixels, K, D,
         (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 100, 1e-12),
     )
     obj = np.column_stack((rays.reshape(-1, 2), np.ones(len(rays))))

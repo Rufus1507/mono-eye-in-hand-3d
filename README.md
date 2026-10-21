@@ -38,7 +38,7 @@ wrong. This tool is built around that problem.
   Only an independent reference, supplied by a person, can establish accuracy.
 
 Full design notes, rejected alternatives and open issues are in
-[`THIET_KE.md`](THIET_KE.md) (Vietnamese).
+[`THIET_KE.md`](THIET_KE.md) (Vietnamese). For the end-to-end 3D localization pipeline, see [`PIPELINE.md`](PIPELINE.md).
 
 ## Install
 
@@ -203,7 +203,8 @@ Công cụ đo FOV và hiệu chuẩn camera (K, D) bằng bảng ChArUco, **kè
 Mỗi lần chụp lưu thành một **phiên bất biến** (ảnh gốc + toạ độ góc + trạng thái
 camera) nên phân tích lại được mà không phải chụp lại.
 
-Vì sao thiết kế như vậy, đã loại phương án nào, còn nợ gì: [`THIET_KE.md`](THIET_KE.md).
+Vì sao thiết kế như vậy, đã loại phương án nào, còn nợ gì: [`THIET_KE.md`](THIET_KE.md).  
+Chi tiết luồng hoạt động của toàn bộ hệ thống từ hiệu chuẩn tới định vị 3D: [`PIPELINE.md`](PIPELINE.md).
 
 ### Cài
 
@@ -422,10 +423,19 @@ Lưu ý: `uv sync` mặc định gỡ các gói ngoài nhóm mặc định. Khi 
 ### Cấu trúc thêm vào
 
 ```
-mono_eye/          config.py, camera_io.py, board_scale.py (đã có) | pose, projection, detect, viz, evaluate (khung rỗng)
-configs/           mono3d.yaml, ground_truth_points.csv
-scripts/           check_env.py
-docs/              roadmap.md, conventions.md, repo-notes.md
-tests/             test_mono_eye.py
+mono_eye/          config.py, camera_io.py, board_scale.py, pose.py, projection.py, detect.py, chess_detectors.py, chess_pipeline.py, chess_board_grid.py, viz.py
+configs/           mono3d.yaml, banco_8x8.yaml, ground_truth_points.csv
+scripts/           check_env.py, realtime_chess_viz.py, run_chess_pipeline.py
+docs/              roadmap.md, conventions.md, repo-notes.md, planchessboard.md
+tests/             test_mono_eye.py, test_chess.py, test_chessboard_8x8.py
 data/, results/    đầu ra cục bộ (nội dung bị gitignore)
 ```
+
+### Hỗ trợ Bàn cờ vua 8x8 (Dual Board Support)
+
+Hệ thống hỗ trợ song song hai loại mốc không gian:
+- **Bảng ChArUco (A4/A3)**: Thích hợp hiệu chuẩn và định vị với mốc tiêu chuẩn.
+- **Bàn cờ vua thực tế 8x8 (`banco_8x8.yaml`)**: Kích thước ô $36.0\text{ mm}$, 32 marker ArUco (`DICT_4X4_50`).
+- Tự động nhận diện (`--board-type auto`) hoặc chỉ định (`--board-type chessboard` / `--board-type charuco`).
+- Định vị đồng thời nhiều quân cờ (10-32 quân), tự động bù trừ che khuất chân đế, phân xử xung đột ô cờ và sinh FEN bàn cờ thời gian thực.
+
