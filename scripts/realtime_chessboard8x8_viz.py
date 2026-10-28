@@ -28,13 +28,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from mono_eye.camera_io import CameraModel, load_camera_yaml
-from mono_eye.chess_board_grid import BoardGrid8x8, CHESS_PIECE_HEIGHTS, compensate_piece_occlusions
+from mono_eye.chess_board_grid import BoardGrid8x8, CHESS_PIECE_HEIGHTS, compensate_piece_occlusions, get_piece_true_height
 from mono_eye.chess_detectors import ChessPieceDetector, CHESS_PIECE_LABELS
-from mono_eye.pose import CameraPose, ChessboardPoseEstimator
+from mono_eye.pose import CameraPose, ChessboardPoseEstimator, UnifiedPoseEstimator
 from mono_eye.projection import ProjectionProcessor
 
 DEFAULT_CALIB = ROOT / "data" / "calib" / "camera.yaml"
 DEFAULT_CHESSBOARD_CFG = ROOT / "configs" / "banco_8x8.yaml"
+DEFAULT_CHARUCO_CFG = ROOT / "bang_calib.yaml"
 DEFAULT_MODEL = ROOT / "data" / "models" / "best.pt"
 
 
@@ -92,22 +93,29 @@ def get_chessboard_roi(
     camera: CameraModel,
     padding_px: int = 50,
     prev_roi: tuple[int, int, int, int] | None = None,
+    grid: BoardGrid8x8 | None = None,
 ) -> tuple[np.ndarray, int, int, tuple[int, int, int, int]]:
     """Cắt vùng Bàn cờ động (Board ROI) từ phép chiếu 3D có làm mượt biên để giảm tải YOLO."""
     fh, fw = frame.shape[:2]
     if not pose.valid or pose.rvec is None or pose.tvec is None:
         return frame, 0, 0, (0, 0, fw, fh)
 
+    if grid is not None:
+        bw = grid.width_mm
+        bh = grid.height_mm
+    else:
+        bw = 365.0 if getattr(pose, "board_type", "") == "charuco" else 320.0
+        bh = 235.0 if getattr(pose, "board_type", "") == "charuco" else 320.0
     # 8 đỉnh của hình hộp bao quanh bàn cờ trong không gian 3D (Z từ 0 tới 85mm)
     board_corners_3d = np.array([
         [0.0, 0.0, 0.0],
-        [320.0, 0.0, 0.0],
-        [320.0, 320.0, 0.0],
-        [0.0, 320.0, 0.0],
+        [bw, 0.0, 0.0],
+        [bw, bh, 0.0],
+        [0.0, bh, 0.0],
         [0.0, 0.0, 85.0],
-        [320.0, 0.0, 85.0],
-        [320.0, 320.0, 85.0],
-        [0.0, 320.0, 85.0],
+        [bw, 0.0, 85.0],
+        [bw, bh, 85.0],
+        [0.0, bh, 85.0],
     ], dtype=np.float64)
 
     proj_pts, _ = cv2.projectPoints(
@@ -228,19 +236,30 @@ class PieceTracker8x8:
                     for i in range(4)
                 ]
 
-                track["class_history"].append(det["class_name"])
+                det_conf = float(det.get("confidence", 0.5))
+                det_cname = det["class_name"]
+
+                track["class_history"].append(det_cname)
                 if len(track["class_history"]) > 7:
                     track["class_history"].pop(0)
 
-                # Chọn class xuất hiện nhiều nhất trong lịch sử gần
-                from collections import Counter
-                stable_class = Counter(track["class_history"]).most_common(1)[0][0]
+                # Cập nhật best class nếu có độ tin cậy vượt trội
+                if det_conf > track.get("best_confidence", 0.0):
+                    track["best_confidence"] = det_conf
+                    track["best_class_name"] = det_cname
+
+                # Nếu đã có frame quan sát với độ tin cậy cao (>= 0.70), khóa nhãn đó
+                if track.get("best_confidence", 0.0) >= 0.70:
+                    stable_class = track["best_class_name"]
+                else:
+                    from collections import Counter
+                    stable_class = Counter(track["class_history"]).most_common(1)[0][0]
 
                 track["bottom_center_pixel"] = smooth_bc
                 track["bbox"] = smooth_bb
                 track["class_name"] = stable_class
                 track["fen_char"] = CHESS_PIECE_LABELS.get(stable_class, det.get("fen_char", "?"))
-                track["confidence"] = max(det.get("confidence", 0.5), track.get("confidence", 0.5) * 0.95)
+                track["confidence"] = max(det_conf, track.get("confidence", 0.5) * 0.95)
                 track["missed_count"] = 0
 
         # 2. Tạo track mới cho detections chưa được match
@@ -255,6 +274,8 @@ class PieceTracker8x8:
                     "fen_char": det.get("fen_char", "?"),
                     "confidence": det.get("confidence", 0.5),
                     "class_history": [c_name],
+                    "best_class_name": c_name,
+                    "best_confidence": float(det.get("confidence", 0.5)),
                     "missed_count": 0,
                     "position_3d": None,
                     "square": "",
@@ -330,6 +351,301 @@ class PieceSpatialFilter:
 
         return state["current_square"]
 
+    def update_height(self, piece_id: str, raw_height: float) -> float:
+        """Làm mượt giá trị chiều cao quân cờ bằng bộ lọc trung vị."""
+        if not hasattr(self, "height_history"):
+            self.height_history: dict[str, deque[float]] = {}
+        if piece_id not in self.height_history:
+            self.height_history[piece_id] = deque(maxlen=self.window_size)
+        self.height_history[piece_id].append(float(raw_height))
+        return float(np.median(self.height_history[piece_id]))
+
+
+def compute_camera_angles(pose: CameraPose, grid: BoardGrid8x8 | None) -> tuple[float, float, str]:
+    """Tính góc phương vị (Azimuth), góc nâng (Elevation) và sector góc nhìn của camera."""
+    if not pose.valid or grid is None or pose.rvec is None or pose.tvec is None:
+        return 0.0, 0.0, "N/A"
+    R_c, _ = cv2.Rodrigues(pose.rvec)
+    C_world = -R_c.T @ pose.tvec.flatten()
+    cx_board = grid.cols * grid.square_size_mm / 2.0
+    cy_board = grid.rows * grid.square_size_mm / 2.0
+    dx = C_world[0] - cx_board
+    dy = C_world[1] - cy_board
+    azimuth = float(np.degrees(np.arctan2(dy, dx)))
+    dist_xy = float(np.sqrt(dx**2 + dy**2))
+    elevation = float(np.degrees(np.arctan2(abs(C_world[2]), max(1e-3, dist_xy))))
+    if -45.0 <= azimuth < 45.0:
+        sector = "Right (+X)"
+    elif 45.0 <= azimuth < 135.0:
+        sector = "Front (+Y)"
+    elif -135.0 <= azimuth < -45.0:
+        sector = "Back (-Y)"
+    else:
+        sector = "Left (-X)"
+    return azimuth, elevation, sector
+
+
+def create_piece_slices(c_name: str, H: float) -> list[tuple[float, float]]:
+    """Tạo danh sách các lát cắt hình học (z, radius) trích xuất trực tiếp từ model 3D (gender_3d/chess.obj)."""
+    c = c_name.lower()
+    if "king" in c:
+        return [
+            (0.0, 0.2142 * H), (0.12 * H, 0.1684 * H), (0.25 * H, 0.0820 * H), (0.38 * H, 0.0580 * H),
+            (0.50 * H, 0.0864 * H), (0.62 * H, 0.0733 * H), (0.75 * H, 0.1245 * H), (0.88 * H, 0.0557 * H), (H, 0.0336 * H)
+        ]
+    elif "queen" in c:
+        return [
+            (0.0, 0.2430 * H), (0.12 * H, 0.2168 * H), (0.25 * H, 0.0930 * H), (0.38 * H, 0.0710 * H),
+            (0.50 * H, 0.1098 * H), (0.62 * H, 0.0811 * H), (0.75 * H, 0.1078 * H), (0.88 * H, 0.1243 * H), (H, 0.0362 * H)
+        ]
+    elif "bishop" in c:
+        return [
+            (0.0, 0.2042 * H), (0.12 * H, 0.2146 * H), (0.25 * H, 0.1922 * H), (0.38 * H, 0.1223 * H),
+            (0.50 * H, 0.1218 * H), (0.62 * H, 0.0981 * H), (0.75 * H, 0.1249 * H), (0.88 * H, 0.0930 * H), (H, 0.0328 * H)
+        ]
+    elif "knight" in c:
+        return [
+            (0.0, 0.2370 * H), (0.12 * H, 0.2273 * H), (0.25 * H, 0.1952 * H), (0.38 * H, 0.2437 * H),
+            (0.50 * H, 0.2361 * H), (0.62 * H, 0.2280 * H), (0.75 * H, 0.2293 * H), (0.88 * H, 0.1453 * H), (H, 0.0833 * H)
+        ]
+    elif "rook" in c:
+        return [
+            (0.0, 0.2720 * H), (0.12 * H, 0.2227 * H), (0.25 * H, 0.1451 * H), (0.38 * H, 0.1355 * H),
+            (0.50 * H, 0.1258 * H), (0.62 * H, 0.1157 * H), (0.75 * H, 0.1781 * H), (0.88 * H, 0.1770 * H), (H, 0.1659 * H)
+        ]
+    else:  # pawn
+        return [
+            (0.0, 0.2269 * H), (0.12 * H, 0.1635 * H), (0.25 * H, 0.2030 * H), (0.38 * H, 0.1660 * H),
+            (0.50 * H, 0.1330 * H), (0.62 * H, 0.1152 * H), (0.75 * H, 0.1411 * H), (0.88 * H, 0.1527 * H), (H, 0.0584 * H)
+        ]
+
+
+_TEXTURE_CACHE: dict[str, np.ndarray] = {}
+TEXTURE_DIR = ROOT / "gender_3d" / "textures"
+
+
+def _load_texture(name: str) -> np.ndarray | None:
+    if name not in _TEXTURE_CACHE:
+        t_path = TEXTURE_DIR / name
+        if t_path.exists():
+            _TEXTURE_CACHE[name] = cv2.imread(str(t_path))
+        else:
+            _TEXTURE_CACHE[name] = None
+    return _TEXTURE_CACHE[name]
+
+
+def draw_3d_piece_model(
+    canvas: np.ndarray,
+    proj_fn,
+    x0: float,
+    y0: float,
+    c_name: str,
+    H: float,
+    fen_char: str,
+    sq_name: str,
+    status_color: tuple[int, int, int] | None = None,
+    cam_eye: np.ndarray | None = None,
+) -> None:
+    """Vẽ mô hình 3D nguyên khối đặc láng mịn có texture đá cẩm thạch / kim loại chuẩn phong cách Blender."""
+    c = c_name.lower()
+    is_white = c.startswith("white")
+
+    # 1. Sinh các lát cắt 3D từ model chuẩn để xác định kích thước chân đế
+    slices = create_piece_slices(c_name, H)
+    base_r = slices[0][1] if slices else 16.0
+
+    if status_color is None:
+        status_color = (0, 220, 90) if is_white else (0, 215, 255)
+
+    # 2. Chiếu điểm đáy và đỉnh sang tọa độ màn hình
+    b_pt = proj_fn(np.array([[x0, y0, 0.0]]))[0].astype(int)
+    t_pt = proj_fn(np.array([[x0, y0, H]]))[0].astype(int)
+
+    angles_sh = np.linspace(0, 2 * np.pi, 20, endpoint=False)
+
+    # 3. Bóng đổ elip mềm mại trên mặt bàn cờ (Soft Drop Shadow)
+    sh_pts = np.array([[x0 + (base_r * 0.95) * np.cos(a), y0 + (base_r * 0.65) * np.sin(a), 0.2] for a in angles_sh])
+    sh_2d = proj_fn(sh_pts).astype(np.int32)
+    overlay_sh = canvas.copy()
+    cv2.fillPoly(overlay_sh, [sh_2d], (12, 16, 24), cv2.LINE_AA)
+    cv2.addWeighted(overlay_sh, 0.50, canvas, 0.50, 0, canvas)
+
+    # 4. Vòng chân đế thanh mảnh tinh tế ôm sát chân cờ
+    glow_pts = np.array([[x0 + (base_r + 2.0) * np.cos(a), y0 + (base_r + 2.0) * np.sin(a), 0.5] for a in angles_sh])
+    gp_2d = proj_fn(glow_pts).astype(np.int32)
+    cv2.polylines(canvas, [gp_2d], isClosed=True, color=status_color, thickness=2, lineType=cv2.LINE_AA)
+
+    # 5. Dựng thân khối 3D tròn xoay đặc mịn 28 cạnh phủ texture ngọc trai / kim loại
+    light_dir = np.array([-0.35, -0.65, 0.65], dtype=np.float64)
+    light_dir /= np.linalg.norm(light_dir)
+
+    num_sides = 28
+    angles = np.linspace(0, 2 * np.pi, num_sides, endpoint=False)
+    cos_a = np.cos(angles)
+    sin_a = np.sin(angles)
+
+    ring_pts_3d = []
+    for z_lvl, r_lvl in slices:
+        pts = np.zeros((num_sides, 3), dtype=np.float64)
+        pts[:, 0] = x0 + r_lvl * cos_a
+        pts[:, 1] = y0 + r_lvl * sin_a
+        pts[:, 2] = z_lvl
+        ring_pts_3d.append(pts)
+
+    ring_pts_2d = [proj_fn(pts).astype(np.int32) for pts in ring_pts_3d]
+
+    # Hướng nhìn camera ảo để vẽ từ sau ra trước (Painter's Algorithm)
+    view_dir = np.array([0.0, -1.0, 0.5])
+    if cam_eye is not None:
+        view_dir = cam_eye - np.array([x0, y0, H / 2.0])
+    view_dir_2d = view_dir[:2] / (np.linalg.norm(view_dir[:2]) + 1e-9)
+
+    side_order = []
+    for i in range(num_sides):
+        mid_ang = (angles[i] + angles[(i + 1) % num_sides]) / 2.0
+        norm_side = np.array([np.cos(mid_ang), np.sin(mid_ang)])
+        dot_v = np.dot(norm_side, view_dir_2d)
+        side_order.append((dot_v, i))
+    side_order.sort(key=lambda item: item[0])
+
+    p_tex = _load_texture("pearl_rose.jpg" if is_white else "brushed_bronze.jpg")
+    tex_th, tex_tw = (p_tex.shape[:2]) if p_tex is not None else (256, 256)
+
+    view_norm = view_dir / np.linalg.norm(view_dir)
+    half_vec = light_dir + view_norm
+    half_vec /= np.linalg.norm(half_vec)
+
+    spec_col = np.array([255, 255, 255], dtype=float) if is_white else np.array([170, 195, 225], dtype=float)
+    fallback_base = np.array([238, 242, 250], dtype=float) if is_white else np.array([32, 38, 48], dtype=float)
+
+    for layer in range(len(slices) - 1):
+        pts_curr = ring_pts_2d[layer]
+        pts_next = ring_pts_2d[layer + 1]
+        v_frac = (slices[layer][0] / max(1e-3, H))
+        tex_v = int(np.clip(v_frac * (tex_th - 1), 0, tex_th - 1))
+
+        for _, i in side_order:
+            i_next = (i + 1) % num_sides
+            quad = np.array([pts_curr[i], pts_curr[i_next], pts_next[i_next], pts_next[i]], dtype=np.int32)
+
+            mid_ang = (angles[i] + angles[i_next]) / 2.0
+            normal = np.array([np.cos(mid_ang), np.sin(mid_ang), 0.22], dtype=np.float64)
+            normal /= np.linalg.norm(normal)
+
+            diffuse = max(0.0, float(np.dot(normal, light_dir)))
+            spec = max(0.0, float(np.dot(normal, half_vec))) ** 14
+
+            diff_intensity = 0.38 + 0.52 * diffuse
+            spec_intensity = 0.45 * spec
+
+            if p_tex is not None:
+                u_frac = (i / float(num_sides))
+                tex_u = int(np.clip(u_frac * (tex_tw - 1), 0, tex_tw - 1))
+                sampled_tex = p_tex[tex_v, tex_u].astype(float)
+            else:
+                sampled_tex = fallback_base
+
+            col = [
+                int(np.clip(sampled_tex[k] * diff_intensity + spec_col[k] * spec_intensity, 0, 255))
+                for k in range(3)
+            ]
+            cv2.fillPoly(canvas, [quad], color=tuple(col), lineType=cv2.LINE_AA)
+
+    # 6. Đỉnh cờ dạng khối đặc nổi
+    top_c_2d = t_pt
+
+    if "king" in c:
+        top_cross_col = (255, 255, 255) if is_white else (160, 190, 225)
+        cv2.line(canvas, (top_c_2d[0], top_c_2d[1] + 2), (top_c_2d[0], top_c_2d[1] - 10), top_cross_col, 3, cv2.LINE_AA)
+        cv2.line(canvas, (top_c_2d[0] - 6, top_c_2d[1] - 5), (top_c_2d[0] + 6, top_c_2d[1] - 5), top_cross_col, 3, cv2.LINE_AA)
+    elif "queen" in c:
+        crown_col = (255, 255, 255) if is_white else (160, 190, 225)
+        cv2.circle(canvas, tuple(top_c_2d), 5, crown_col, -1, cv2.LINE_AA)
+        cv2.circle(canvas, (top_c_2d[0] - 6, top_c_2d[1] - 2), 2, crown_col, -1, cv2.LINE_AA)
+        cv2.circle(canvas, (top_c_2d[0] + 6, top_c_2d[1] - 2), 2, crown_col, -1, cv2.LINE_AA)
+    elif "bishop" in c:
+        b_col = (255, 255, 255) if is_white else (160, 190, 225)
+        cv2.circle(canvas, (top_c_2d[0], top_c_2d[1] - 3), 4, b_col, -1, cv2.LINE_AA)
+    elif "knight" in c:
+        horse_col = (250, 250, 255) if is_white else (45, 55, 70)
+        cv2.circle(canvas, (top_c_2d[0], top_c_2d[1] - 2), 6, horse_col, -1, cv2.LINE_AA)
+        ear_pts = np.array([
+            [top_c_2d[0] - 4, top_c_2d[1] - 2],
+            [top_c_2d[0] - 1, top_c_2d[1] - 8],
+            [top_c_2d[0] + 2, top_c_2d[1] - 2],
+        ], dtype=np.int32)
+        cv2.fillPoly(canvas, [ear_pts], (255, 255, 255) if is_white else (160, 190, 225), cv2.LINE_AA)
+    elif "rook" in c:
+        r_col = (255, 255, 255) if is_white else (160, 190, 225)
+        cv2.rectangle(canvas, (top_c_2d[0] - 6, top_c_2d[1] - 4), (top_c_2d[0] + 6, top_c_2d[1]), r_col, -1)
+    else:  # pawn
+        pawn_col = (250, 250, 255) if is_white else (40, 50, 65)
+        cv2.circle(canvas, tuple(top_c_2d), 6, pawn_col, -1, cv2.LINE_AA)
+        cv2.circle(canvas, (top_c_2d[0] - 2, top_c_2d[1] - 2), 2, (255, 255, 255), -1, cv2.LINE_AA)
+
+    # 7. Nhãn thông tin 3D (Badge Pill) nhỏ gọn tinh tế
+    bx = top_c_2d[0] + 8
+    by = top_c_2d[1] - 10
+    cv2.putText(canvas, f"{fen_char}@{sq_name}", (bx, by), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(canvas, f"{H:.0f}mm", (bx, by + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, status_color, 1, cv2.LINE_AA)
+
+
+class OrbitCamera3D:
+    """Quản lý camera 3D tương tác xoay 360 độ quanh bàn cờ bằng chuột."""
+
+    def __init__(self, half_w: int = 640, canvas_h: int = 720):
+        self.half_w = half_w
+        self.canvas_h = canvas_h
+        self.yaw_deg = -93.0
+        self.pitch_deg = 40.0
+        self.dist = 660.0
+        self.is_dragging = False
+        self.last_mouse_x = 0
+        self.last_mouse_y = 0
+        self.dirty = True
+
+    def reset(self):
+        self.yaw_deg = -93.0
+        self.pitch_deg = 40.0
+        self.dist = 660.0
+        self.dirty = True
+
+    def on_mouse(self, event, x, y, flags, param=None):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if x >= self.half_w:
+                self.is_dragging = True
+                self.last_mouse_x = x
+                self.last_mouse_y = y
+        elif event == cv2.EVENT_LBUTTONUP:
+            self.is_dragging = False
+        elif event == cv2.EVENT_MOUSEMOVE and self.is_dragging:
+            dx = x - self.last_mouse_x
+            dy = y - self.last_mouse_y
+            self.last_mouse_x = x
+            self.last_mouse_y = y
+            self.yaw_deg = (self.yaw_deg + dx * 0.45) % 360.0
+            self.pitch_deg = max(10.0, min(85.0, self.pitch_deg - dy * 0.35))
+            self.dirty = True
+        elif event == cv2.EVENT_MOUSEWHEEL:
+            if x >= self.half_w:
+                if flags > 0:
+                    self.dist = max(250.0, self.dist - 35.0)
+                else:
+                    self.dist = min(1500.0, self.dist + 35.0)
+                self.dirty = True
+        elif event in (cv2.EVENT_RBUTTONDOWN, cv2.EVENT_MBUTTONDOWN):
+            if x >= self.half_w:
+                self.reset()
+
+    def compute_cam_eye(self, center_x: float, center_y: float) -> np.ndarray:
+        yaw_rad = np.radians(self.yaw_deg)
+        pitch_rad = np.radians(self.pitch_deg)
+        r_xy = self.dist * np.cos(pitch_rad)
+        z = self.dist * np.sin(pitch_rad)
+        x = center_x + r_xy * np.cos(yaw_rad)
+        y = center_y + r_xy * np.sin(yaw_rad)
+        return np.array([x, y, z], dtype=np.float64)
+
 
 def render_3d_viewport_chessboard8x8(
     camera_pos: np.ndarray | None,
@@ -340,6 +656,7 @@ def render_3d_viewport_chessboard8x8(
     width: int = 640,
     height: int = 720,
     cam_eye: np.ndarray | None = None,
+    orbit_camera: OrbitCamera3D | None = None,
 ) -> np.ndarray:
     """Tạo khung nhìn phối cảnh 3D trực quan cho Bàn cờ vua 8x8 và các quân cờ 3D."""
     canvas = np.full((height, width, 3), 24, dtype=np.uint8)
@@ -353,8 +670,10 @@ def render_3d_viewport_chessboard8x8(
     center_x = board_w / 2.0      # 160 mm
     center_y = board_h / 2.0      # 160 mm
 
-    # Camera ảo quan sát khung nhìn 3D (3D Virtual Observer)
-    if cam_eye is None:
+    # Camera ảo quan sát khung nhìn 3D (Hỗ trợ OrbitCamera3D xoay 360 độ)
+    if orbit_camera is not None:
+        cam_eye = orbit_camera.compute_cam_eye(center_x, center_y)
+    elif cam_eye is None:
         cam_eye = np.array([center_x - 30.0, -350.0, 420.0], dtype=np.float64)
 
     target = np.array([center_x, center_y, 0.0], dtype=np.float64)
@@ -364,7 +683,11 @@ def render_3d_viewport_chessboard8x8(
     z_axis = target - cam_eye
     z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-9)
     x_axis = np.cross(z_axis, up)
-    x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-9)
+    norm_x = np.linalg.norm(x_axis)
+    if norm_x < 1e-6:
+        x_axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    else:
+        x_axis = x_axis / norm_x
     y_axis = np.cross(z_axis, x_axis)
 
     R_view = np.vstack([x_axis, y_axis, z_axis])
@@ -396,43 +719,118 @@ def render_3d_viewport_chessboard8x8(
         p = proj(pts)
         cv2.line(canvas, tuple(p[0].astype(int)), tuple(p[1].astype(int)), (38, 38, 42), 1, cv2.LINE_AA)
 
-    # 2. Vẽ viền gỗ ngoài của bàn cờ (Wooden Border)
-    border_m = 18.0  # Mép gỗ dày 18mm bao quanh
-    border_3d = np.array([
-        [-border_m, -border_m, -3.0],
-        [board_w + border_m, -border_m, -3.0],
-        [board_w + border_m, board_h + border_m, -3.0],
-        [-border_m, board_h + border_m, -3.0],
+    # 2. Bệ cẩm thạch nhiều tầng bên dưới bàn cờ (Tiered Marble Pedestal) - Phủ Texture thật
+    m_out2 = 28.0
+    pts_tier2_3d = np.array([
+        [-m_out2, -m_out2, -14.0],
+        [board_w + m_out2, -m_out2, -14.0],
+        [board_w + m_out2, board_h + m_out2, -14.0],
+        [-m_out2, board_h + m_out2, -14.0],
     ])
-    bp = proj(border_3d).astype(np.int32)
-    # Màu gỗ ấm cho viền ngoài
-    cv2.fillPoly(canvas, [bp], color=(42, 60, 92), lineType=cv2.LINE_AA)
-    cv2.polylines(canvas, [bp], isClosed=True, color=(70, 95, 140), thickness=2, lineType=cv2.LINE_AA)
+    p_t2 = proj(pts_tier2_3d).astype(np.float32)
 
-    # 3. Vẽ 64 ô cờ xen kẽ màu sáng / tối
-    col_light = (181, 217, 240)
-    col_dark = (72, 108, 148)
-    col_grid_line = (50, 75, 105)
+    m_out1 = 20.0
+    pts_tier1_3d = np.array([
+        [-m_out1, -m_out1, -6.0],
+        [board_w + m_out1, -m_out1, -6.0],
+        [board_w + m_out1, board_h + m_out1, -6.0],
+        [-m_out1, board_h + m_out1, -6.0],
+    ])
+    p_t1 = proj(pts_tier1_3d).astype(np.float32)
 
-    for r in range(8):
-        for c in range(8):
-            is_light = (r + c) % 2 == 1
-            cell_col = col_light if is_light else col_dark
+    marble_tex = _load_texture("marble_white.jpg")
+    if marble_tex is not None:
+        tex_h, tex_w = marble_tex.shape[:2]
+        src_corners = np.array([[0, 0], [tex_w, 0], [tex_w, tex_h], [0, tex_h]], dtype=np.float32)
+        try:
+            # Tầng 2
+            M_t2 = cv2.getPerspectiveTransform(src_corners, p_t2)
+            warp_t2 = cv2.warpPerspective(marble_tex, M_t2, (width, height))
+            mask_t2 = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(mask_t2, [p_t2.astype(np.int32)], 255)
+            canvas[mask_t2 > 0] = cv2.addWeighted(warp_t2[mask_t2 > 0], 0.85, np.full_like(warp_t2[mask_t2 > 0], 30), 0.15, 0)
 
-            x0 = c * sq_size
-            y0 = r * sq_size
-            x1 = (c + 1) * sq_size
-            y1 = (r + 1) * sq_size
+            # Tầng 1
+            M_t1 = cv2.getPerspectiveTransform(src_corners, p_t1)
+            warp_t1 = cv2.warpPerspective(marble_tex, M_t1, (width, height))
+            mask_t1 = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(mask_t1, [p_t1.astype(np.int32)], 255)
+            canvas[mask_t1 > 0] = cv2.addWeighted(warp_t1[mask_t1 > 0], 0.95, np.full_like(warp_t1[mask_t1 > 0], 20), 0.05, 0)
+            cv2.polylines(canvas, [p_t1.astype(np.int32)], True, (150, 165, 180), 2, cv2.LINE_AA)
+        except Exception:
+            cv2.fillPoly(canvas, [p_t2.astype(np.int32)], (195, 208, 222), cv2.LINE_AA)
+            cv2.fillPoly(canvas, [p_t1.astype(np.int32)], (218, 228, 240), cv2.LINE_AA)
+    else:
+        cv2.fillPoly(canvas, [p_t2.astype(np.int32)], (195, 208, 222), cv2.LINE_AA)
+        cv2.fillPoly(canvas, [p_t1.astype(np.int32)], (218, 228, 240), cv2.LINE_AA)
+        cv2.polylines(canvas, [p_t1.astype(np.int32)], True, (160, 175, 190), 2, cv2.LINE_AA)
 
-            cell_3d = np.array([
-                [x0, y0, 0.0],
-                [x1, y0, 0.0],
-                [x1, y1, 0.0],
-                [x0, y1, 0.0],
-            ])
-            cp = proj(cell_3d).astype(np.int32)
-            cv2.fillPoly(canvas, [cp], color=cell_col, lineType=cv2.LINE_AA)
-            cv2.polylines(canvas, [cp], isClosed=True, color=col_grid_line, thickness=1, lineType=cv2.LINE_AA)
+    # Nẹp gỗ mun đen bóng bao quanh 64 ô cờ (Z = 0)
+    m_border = 10.0
+    pts_border = np.array([
+        [-m_border, -m_border, 0.0],
+        [board_w + m_border, -m_border, 0.0],
+        [board_w + m_border, board_h + m_border, 0.0],
+        [-m_border, board_h + m_border, 0.0],
+    ])
+    p_b = proj(pts_border).astype(np.int32)
+    cv2.fillPoly(canvas, [p_b], color=(18, 22, 30), lineType=cv2.LINE_AA)
+    cv2.polylines(canvas, [p_b], isClosed=True, color=(65, 80, 100), thickness=1, lineType=cv2.LINE_AA)
+
+    # Đinh tán đồng kim loại trang trí viền ngoài (Decor Studs)
+    for i in range(9):
+        x_stud = i * (board_w / 8.0)
+        stud_pt = proj([[-m_out1 + 4.0, x_stud, -3.0]])[0].astype(int)
+        cv2.circle(canvas, tuple(stud_pt), 3, (40, 165, 230), -1, cv2.LINE_AA)
+        cv2.circle(canvas, tuple(stud_pt), 1, (200, 240, 255), -1, cv2.LINE_AA)
+        stud_pt2 = proj([[x_stud, -m_out1 + 4.0, -3.0]])[0].astype(int)
+        cv2.circle(canvas, tuple(stud_pt2), 3, (40, 165, 230), -1, cv2.LINE_AA)
+        cv2.circle(canvas, tuple(stud_pt2), 1, (200, 240, 255), -1, cv2.LINE_AA)
+
+    # 3. Phủ Texture 64 ô cờ hoàn chỉnh: Đá cẩm thạch ngà & Gỗ mun bóng
+    board_tex = _load_texture("board_8x8_textured.jpg")
+    pts_board_3d = np.array([
+        [0.0, 0.0, 0.0],
+        [board_w, 0.0, 0.0],
+        [board_w, board_h, 0.0],
+        [0.0, board_h, 0.0],
+    ])
+    p_board = proj(pts_board_3d).astype(np.float32)
+
+    has_board_warp = False
+    if board_tex is not None and (grid_8x8 is None or grid_8x8.cols == 8):
+        try:
+            b_tex_h, b_tex_w = board_tex.shape[:2]
+            src_board_corners = np.array([[0, 0], [b_tex_w, 0], [b_tex_w, b_tex_h], [0, b_tex_h]], dtype=np.float32)
+            M_board = cv2.getPerspectiveTransform(src_board_corners, p_board)
+            warp_board = cv2.warpPerspective(board_tex, M_board, (width, height), flags=cv2.INTER_LINEAR)
+            mask_board = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(mask_board, [p_board.astype(np.int32)], 255)
+            canvas[mask_board > 0] = warp_board[mask_board > 0]
+            cv2.polylines(canvas, [p_board.astype(np.int32)], True, (25, 35, 50), 2, cv2.LINE_AA)
+            has_board_warp = True
+        except Exception:
+            has_board_warp = False
+
+    num_rows = grid_8x8.rows if grid_8x8 else 8
+    num_cols = grid_8x8.cols if grid_8x8 else 8
+
+    if not has_board_warp:
+        col_light = (235, 242, 250)
+        col_dark = (32, 46, 68)
+        for r in range(num_rows):
+            for c in range(num_cols):
+                is_light = (r + c) % 2 == 1
+                cell_col = col_light if is_light else col_dark
+                x0 = c * sq_size
+                y0 = r * sq_size
+                x1 = (c + 1) * sq_size
+                y1 = (r + 1) * sq_size
+                cell_3d = np.array([[x0, y0, 0.0], [x1, y0, 0.0], [x1, y1, 0.0], [x0, y1, 0.0]])
+                cp = proj(cell_3d).astype(np.int32)
+                cv2.fillPoly(canvas, [cp], color=cell_col, lineType=cv2.LINE_AA)
+                edge_col = (210, 220, 230) if is_light else (22, 32, 48)
+                cv2.polylines(canvas, [cp], isClosed=True, color=edge_col, thickness=1, lineType=cv2.LINE_AA)
 
     # Nếp gấp đôi giữa bàn cờ (giữa hàng 4 và 5, y = 144 mm)
     hinge_3d = np.array([[0.0, 4 * sq_size, 0.5], [board_w, 4 * sq_size, 0.5]])
@@ -440,14 +838,14 @@ def render_3d_viewport_chessboard8x8(
     cv2.line(canvas, tuple(hp[0]), tuple(hp[1]), (25, 35, 55), 2, cv2.LINE_AA)
 
     # 4. Ký hiệu chữ cái A-H và số 1-8 trên viền gỗ
-    for c in range(8):
-        lbl = grid_8x8.col_names[c].upper()
+    for c in range(num_cols):
+        lbl = grid_8x8.col_names[c].upper() if grid_8x8 else str(c)
         pt_3d = np.array([[(c + 0.5) * sq_size, -9.0, 0.0]])
         lp = proj(pt_3d)[0].astype(int)
         cv2.putText(canvas, lbl, (lp[0] - 5, lp[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (210, 225, 240), 1, cv2.LINE_AA)
 
-    for r in range(8):
-        lbl = grid_8x8.rank_names[r]
+    for r in range(num_rows):
+        lbl = grid_8x8.rank_names[r] if grid_8x8 else str(r + 1)
         pt_3d = np.array([[-9.0, (r + 0.5) * sq_size, 0.0]])
         lp = proj(pt_3d)[0].astype(int)
         cv2.putText(canvas, lbl, (lp[0] - 5, lp[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (210, 225, 240), 1, cv2.LINE_AA)
@@ -527,10 +925,17 @@ def render_3d_viewport_chessboard8x8(
 
     # 8. Vẽ các quân cờ 3D trên mặt bàn cờ (3D Chess Pieces)
     if chess_pieces:
-        # Sắp xếp theo chiều sâu Y giảm dần để vẽ từ xa lại gần
+        # Sắp xếp theo chiều sâu từ xa đến gần so với camera ảo (Painter's Algorithm chuẩn cho 360 độ)
+        def piece_dist_to_cam(p_dict):
+            pos = p_dict.get("position_3d")
+            if pos is None:
+                return -1.0
+            p_pos = np.array([float(pos[0]), float(pos[1]), 20.0], dtype=np.float64)
+            return float(np.linalg.norm(cam_eye - p_pos))
+
         sorted_pieces = sorted(
             [p for p in chess_pieces if p.get("position_3d") is not None],
-            key=lambda p: float(p["position_3d"][1]),
+            key=piece_dist_to_cam,
             reverse=True,
         )
 
@@ -538,73 +943,53 @@ def render_3d_viewport_chessboard8x8(
             pos_3d = p["position_3d"]
             x_val, y_val = float(pos_3d[0]), float(pos_3d[1])
             c_name = str(p.get("class_name", "")).lower()
-            is_white = c_name.startswith("white")
             fen_char = p.get("fen_char", "?")
             sq_name = p.get("square", "")
+            sq_color_str = p.get("square_color", "green")
 
-            # Chiều cao mô phỏng quân cờ
-            if "king" in c_name:
-                p_height = 68.0
-                r_base, r_top = 11.0, 8.0
-            elif "queen" in c_name:
-                p_height = 60.0
-                r_base, r_top = 10.5, 7.5
-            elif "bishop" in c_name:
-                p_height = 52.0
-                r_base, r_top = 9.5, 6.0
-            elif "knight" in c_name:
-                p_height = 48.0
-                r_base, r_top = 9.5, 6.5
-            elif "rook" in c_name:
-                p_height = 42.0
-                r_base, r_top = 9.5, 7.0
-            else:  # pawn
-                p_height = 34.0
-                r_base, r_top = 8.5, 5.0
+            # Xác định chiều cao thực tế của quân cờ
+            true_h = get_piece_true_height(c_name)
+            H = float(true_h) if true_h is not None else 40.0
 
-            base_pt = np.array([x_val, y_val, 0.0])
-            top_pt = np.array([x_val, y_val, p_height])
+            # Màu vòng chân đế theo sai số định vị
+            status_color = {
+                "green": (0, 220, 90),
+                "yellow": (0, 215, 255),
+                "red": (255, 60, 60),
+            }.get(sq_color_str, (0, 220, 90))
 
-            b_2d = proj(base_pt.reshape(1, 3))[0].astype(int)
-            t_2d = proj(top_pt.reshape(1, 3))[0].astype(int)
-
-            # Màu sắc: Trắng (Vàng ngà ấm), Đen (Nâu đậm viền vàng gold)
-            body_col = (235, 245, 255) if is_white else (30, 35, 50)
-            edge_col = (140, 180, 220) if is_white else (60, 140, 220)
-            glow_col = (255, 215, 0) if is_white else (0, 165, 255)
-
-            # Thân trụ 3D
-            cv2.line(canvas, tuple(b_2d), tuple(t_2d), body_col, 4, cv2.LINE_AA)
-
-            # Chân đế tiếp xúc mặt bàn
-            cv2.circle(canvas, tuple(b_2d), int(r_base * 0.7), edge_col, -1, cv2.LINE_AA)
-            cv2.circle(canvas, tuple(b_2d), int(r_base * 0.7) + 2, (255, 255, 255), 1, cv2.LINE_AA)
-
-            # Đầu mũ quân cờ
-            cv2.circle(canvas, tuple(t_2d), int(r_top * 0.8), glow_col, -1, cv2.LINE_AA)
-            cv2.circle(canvas, tuple(t_2d), int(r_top * 0.8), (255, 255, 255), 1, cv2.LINE_AA)
-
-            badge = f"{fen_char}@{sq_name}" if sq_name else fen_char
-            cv2.putText(
-                canvas,
-                badge,
-                (t_2d[0] + 7, t_2d[1] - 4),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.40,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA,
+            draw_3d_piece_model(
+                canvas=canvas,
+                proj_fn=proj,
+                x0=x_val,
+                y0=y_val,
+                c_name=c_name,
+                H=H,
+                fen_char=fen_char,
+                sq_name=sq_name,
+                status_color=status_color,
+                cam_eye=cam_eye,
             )
 
     # 9. Header và Title Bar
     cv2.rectangle(canvas, (0, 0), (width, 38), (18, 18, 20), -1)
     cv2.putText(
         canvas,
-        "3D DIGITAL TWIN - CHESSBOARD 8X8 (40mm)",
-        (14, 25),
+        f"3D DIGITAL TWIN - {'CHARUCO A3 (33mm)' if (grid_8x8 and grid_8x8.cols == 11) else 'CHESSBOARD 8X8 (40mm)'}",
+        (14, 18),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.52,
+        0.44,
         (0, 215, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "Xoay 360: Keo chuot trai | Zoom: Cuon chuot | Reset: Chuot phai",
+        (14, 32),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.32,
+        (180, 200, 220),
         1,
         cv2.LINE_AA,
     )
@@ -644,6 +1029,8 @@ def run_chessboard8x8_live(
     source: str | int = 0,
     calib_file: Path | str = DEFAULT_CALIB,
     board_cfg_file: Path | str = DEFAULT_CHESSBOARD_CFG,
+    charuco_cfg_file: Path | str = DEFAULT_CHARUCO_CFG,
+    board_type: str = "auto",
     model_weights: Path | str = DEFAULT_MODEL,
     conf_thresh: float = 0.45,
     imgsz: int = 480,
@@ -656,10 +1043,11 @@ def run_chessboard8x8_live(
     save_snapshot_path: str | None = None,
     headless: bool = False,
     max_frames: int | None = None,
+    dump_csv_path: str | None = None,
 ) -> None:
     """Vòng lặp chính xử lý luồng video Bàn cờ 8x8 thời gian thực (High FPS & Accuracy)."""
     print("=" * 70)
-    print(" KHỞI CHẠY HỆ THỐNG ĐỊNH VỊ 3D BÀN CỜ VUA 8X8 (TỐI ƯU HÓA HIỆU NĂNG)")
+    print(" KHỞI CHẠY HỆ THỐNG ĐỊNH VỊ 3D BÀN CỜ 8X8 (Ô 40MM, MARKER 32MM)")
     print("=" * 70)
     print(f" Source          : {source}")
     print(f" Camera Calib    : {calib_file}")
@@ -672,21 +1060,83 @@ def run_chessboard8x8_live(
     print(f" HSV Color Check : {'BẬT (Chống nhầm Trắng/Đen)' if use_hsv else 'TẮT'}")
     print("-" * 70)
 
+    # 0. Khởi tạo CSV Dump nếu có yêu cầu
+    import csv
+    csv_file_obj = None
+    csv_writer = None
+    if dump_csv_path is not None:
+        p_csv = Path(dump_csv_path)
+        p_csv.parent.mkdir(parents=True, exist_ok=True)
+        csv_file_obj = open(p_csv, "w", encoding="utf-8", newline="")
+        csv_writer = csv.writer(csv_file_obj)
+        csv_writer.writerow([
+            "frame_idx", "track_id", "class_name", "fen_char", "confidence",
+            "square", "square_color", "estimated_height_mm", "true_height_mm",
+            "height_error_mm", "x_mm", "y_mm", "cam_azimuth_deg", "cam_sector",
+            "pose_valid", "pose_reproj_px"
+        ])
+
     # 1. Nạp camera calibration
+    if "video7" in str(source).lower() and str(calib_file) == str(DEFAULT_CALIB):
+        phone_calib7 = ROOT / "data" / "calib" / "camera_phone_video7.yaml"
+        if phone_calib7.exists():
+            calib_file = str(phone_calib7)
+    elif "video6" in str(source).lower() and str(calib_file) == str(DEFAULT_CALIB):
+        phone_calib6 = ROOT / "data" / "calib" / "camera_phone_video6.yaml"
+        if phone_calib6.exists():
+            calib_file = str(phone_calib6)
+
+    if "video7" in str(source).lower() and str(board_cfg_file) == str(DEFAULT_CHESSBOARD_CFG):
+        board_9x6 = ROOT / "configs" / "banco_9x6.yaml"
+        if board_9x6.exists():
+            board_cfg_file = str(board_9x6)
+    elif "video6" in str(source).lower() and str(board_cfg_file) == str(DEFAULT_CHESSBOARD_CFG):
+        phone_board = ROOT / "configs" / "banco_video6.yaml"
+        if phone_board.exists():
+            board_cfg_file = str(phone_board)
+
+    if "video7" in str(source).lower() and str(charuco_cfg_file) == str(DEFAULT_CHARUCO_CFG):
+        charuco_bo2 = ROOT / "configs" / "bang_charuco_A3_o40mm_bo2.yaml"
+        if charuco_bo2.exists():
+            charuco_cfg_file = str(charuco_bo2)
+
     base_camera = load_camera_yaml(calib_file)
     active_camera = base_camera
 
-    # 2. Khởi tạo Pose Estimator chuyên biệt cho Bàn cờ 8x8
-    pose_estimator = ChessboardPoseEstimator(
+    # 2. Khởi tạo UnifiedPoseEstimator hỗ trợ song song Bàn cờ 8x8 & ChArUco A3/A4
+    pose_estimator = UnifiedPoseEstimator(
         camera=active_camera,
-        board_config=board_cfg_file,
-        min_markers=2,
-        max_reproj_error_px=6.0,
-        max_hold_frames=5,
+        mode=board_type,
+        charuco_config=charuco_cfg_file,
+        chessboard_config=board_cfg_file,
+        max_reproj_error_px=15.0,
     )
 
-    # 3. Khởi tạo Mô hình Lưới Bàn cờ 8x8 & Bộ ổn định quân cờ đa khung hình
+    # 3. Khởi tạo Mô hình Lưới Bàn cờ: Hỗ trợ linh hoạt cấu hình 8x8, 9x6 và ChArUco
+    board_p = Path(board_cfg_file)
+    grid_cols = 8
+    grid_rows = 8
+    grid_sq_mm = 40.0
+    if board_p.exists():
+        try:
+            with open(board_p, "r", encoding="utf-8") as bf:
+                b_data = yaml.safe_load(bf)
+                bang_meta = b_data.get("bang", {}) if b_data else {}
+                grid_cols = int(bang_meta.get("o_ngang", 8))
+                grid_rows = int(bang_meta.get("o_doc", 8))
+                grid_sq_mm = float(bang_meta.get("canh_o_mm", 40.0))
+        except Exception:
+            pass
+
+    grid_custom = BoardGrid8x8(square_size_mm=grid_sq_mm, cols=grid_cols, rows=grid_rows)
     grid_8x8 = BoardGrid8x8(square_size_mm=40.0, cols=8, rows=8)
+    grid_charuco_a3 = BoardGrid8x8(square_size_mm=33.02, cols=11, rows=7)
+    if "video7" in str(source).lower() or "video6" in str(source).lower():
+        active_grid = grid_custom
+    elif board_type == "charuco" or "video4" in str(source).lower() or "video5" in str(source).lower():
+        active_grid = grid_charuco_a3
+    else:
+        active_grid = grid_custom
     spatial_filter = PieceSpatialFilter(window_size=5, hysteresis_count=3)
     piece_tracker = PieceTracker8x8(max_missed=5, match_dist_px=38.0)
 
@@ -749,6 +1199,7 @@ def run_chessboard8x8_live(
     # 7. Video writer nếu được chỉ định
     video_writer = None
     if save_video_path:
+        Path(save_video_path).parent.mkdir(parents=True, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         video_writer = cv2.VideoWriter(save_video_path, fourcc, 25.0, (canvas_w, canvas_h))
         print(f" [GHI HÌNH] Đang lưu video kết quả tại: {save_video_path}")
@@ -764,10 +1215,19 @@ def run_chessboard8x8_live(
 
     half_w = canvas_w // 2
 
+    # Khởi tạo OrbitCamera3D cho phép tương tác chuột xoay 360 độ, cuộn zoom, chuột phải reset
+    orbit_camera = OrbitCamera3D(half_w=half_w, canvas_h=canvas_h)
+
     window_name = "Mono Eye-in-Hand 3D: Chessboard 8x8 Live Viewport (Fast)"
     if not headless:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(window_name, canvas_w, canvas_h)
+        cv2.setMouseCallback(window_name, orbit_camera.on_mouse)
+
+    cam_pos_3d: np.ndarray | None = None
+    pose: CameraPose = CameraPose(valid=False)
+    chess_pieces: list[dict] = []
+    dashboard: np.ndarray = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
 
     print(" Đang chạy vòng lặp nhận diện... Nhấn 'q' để thoát, 'p' để tạm dừng, 'r' để reset.")
 
@@ -780,7 +1240,7 @@ def run_chessboard8x8_live(
                 else:
                     ret, frame = cap.read()
                     if not ret or frame is None:
-                        if total_video_frames > 1:
+                        if total_video_frames > 1 and not headless and save_video is None:
                             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                             ret, frame = cap.read()
                             if not ret or frame is None:
@@ -798,11 +1258,15 @@ def run_chessboard8x8_live(
                 fh, fw = frame.shape[:2]
                 if (fw, fh) != (active_camera.width, active_camera.height):
                     active_camera = base_camera.scale_to(fw, fh)
-                    pose_estimator.camera = active_camera
+                    if hasattr(pose_estimator, "update_camera"):
+                        pose_estimator.update_camera(active_camera)
+                    else:
+                        pose_estimator.camera = active_camera
                     projection = ProjectionProcessor.from_camera(active_camera, plane_z=0.0)
 
                 # A. Ước lượng Pose từ bàn cờ 8x8 (Subpixel + LM + Adaptive Temporal Filter)
                 pose: CameraPose = pose_estimator.estimate(frame)
+                cam_azimuth, cam_elevation, cam_sector = compute_camera_angles(pose, active_grid)
 
                 # Cập nhật quỹ đạo di chuyển của camera
                 cam_pos_3d = pose.camera_center if pose.valid else None
@@ -818,7 +1282,7 @@ def run_chessboard8x8_live(
                     # 1. Cắt vùng bàn cờ động có làm mượt biên (Smoothed Board ROI Crop)
                     if use_roi and pose.valid:
                         roi_img, roi_x, roi_y, smooth_roi = get_chessboard_roi(
-                            frame, pose, active_camera, prev_roi=smooth_roi
+                            frame, pose, active_camera, prev_roi=smooth_roi, grid=active_grid
                         )
                     else:
                         roi_img, roi_x, roi_y, smooth_roi = frame, 0, 0, None
@@ -866,19 +1330,90 @@ def run_chessboard8x8_live(
                                     p_key = f"tr_{p.get('track_id', 0)}"
                                     p3d_smooth = spatial_filter.update_and_smooth(p_key, p3d_corr)
                                     p["position_3d"] = p3d_smooth
+
+                                    # Ước lượng chiều cao 3D từ bounding box và chân đế
+                                    bx = p.get("bbox")
+                                    if bx and len(bx) == 4:
+                                        top_px = ((bx[0] + bx[2]) / 2.0, bx[1])
+                                        raw_h = projection.compute_piece_height(ref_px, top_px, pose, base_3d=p3d_smooth)
+                                        if raw_h is not None:
+                                            sm_h = spatial_filter.update_height(p_key, raw_h)
+                                            true_h = get_piece_true_height(p.get("class_name", ""))
+                                            p["estimated_height_mm"] = sm_h
+                                            p["true_height_mm"] = true_h
+                                            if true_h is not None:
+                                                diff_h = abs(sm_h - true_h)
+                                                p["height_error_mm"] = sm_h - true_h
+                                                if diff_h <= 5.0:
+                                                    p["square_color"] = "green"
+                                                elif diff_h <= 10.0:
+                                                    p["square_color"] = "yellow"
+                                                else:
+                                                    p["square_color"] = "red"
+
                                     active_pieces.append(p)
 
                         # Gán ô cờ & Áp dụng Trễ chuyển ô (Square Hysteresis)
                         if active_pieces:
-                            assigned = grid_8x8.assign_pieces_to_squares(active_pieces)
+                            if "video7" in str(source).lower() or "video6" in str(source).lower():
+                                active_grid = grid_custom
+                            elif getattr(pose, "board_type", "") == "charuco" or "video4" in str(source).lower() or "video5" in str(source).lower():
+                                active_grid = grid_charuco_a3
+                            else:
+                                active_grid = grid_custom
+                            assigned = active_grid.assign_pieces_to_squares(active_pieces)
                             for ap in assigned:
                                 cand_sq = ap.get("square", "")
                                 p_id = f"tr_{ap.get('track_id', 0)}"
                                 stable_sq = spatial_filter.apply_hysteresis(p_id, cand_sq)
                                 ap["square"] = stable_sq
 
+                                # Tinh chỉnh chiều cao dựa trên tâm ô cờ lý thuyết (Square Regularization)
+                                if stable_sq:
+                                    sq_c = active_grid.square_to_center(stable_sq)
+                                    if sq_c and ap.get("position_3d") is not None:
+                                        # Bù trừ bán kính chân đế động theo hướng camera
+                                        ptype_k = str(ap.get("class_name", "")).replace("white_", "").replace("black_", "").lower()
+                                        r_ped = {"pawn": 12.0, "rook": 13.0, "knight": 13.5, "bishop": 14.0, "queen": 16.0, "king": 17.0}.get(ptype_k, 13.5)
+                                        R_c_cur, _ = cv2.Rodrigues(pose.rvec)
+                                        C_cur = -R_c_cur.T @ pose.tvec.flatten()
+                                        u_cam_v = ap["position_3d"][:2] - C_cur[:2]
+                                        n_cam_v = np.linalg.norm(u_cam_v)
+                                        p_comp_2d = ap["position_3d"][:2] + r_ped * (u_cam_v / n_cam_v) if n_cam_v > 1e-3 else ap["position_3d"][:2]
+
+                                        # Snap-to-Grid: nếu khoảng cách tới tâm ô <= 16.5mm (nửa ô cờ A3), snap 100% về tâm ô
+                                        dist_to_center = float(np.linalg.norm(p_comp_2d - sq_c[:2]))
+                                        if dist_to_center <= (active_grid.square_size_mm * 0.45):
+                                            base_reg = np.array([sq_c[0], sq_c[1], 0.0], dtype=np.float64)
+                                            ap["position_3d"] = base_reg.copy()
+                                        else:
+                                            base_reg = np.array([
+                                                0.75 * sq_c[0] + 0.25 * p_comp_2d[0],
+                                                0.75 * sq_c[1] + 0.25 * p_comp_2d[1],
+                                                0.0,
+                                            ], dtype=np.float64)
+                                        bx = ap.get("bbox")
+                                        ref_px = ap.get("bottom_center_pixel")
+                                        if bx and len(bx) == 4 and ref_px:
+                                            top_px = ((bx[0] + bx[2]) / 2.0, bx[1])
+                                            ref_h = projection.compute_piece_height(ref_px, top_px, pose, base_3d=base_reg)
+                                            if ref_h is not None:
+                                                sm_h = spatial_filter.update_height(p_id, ref_h)
+                                                true_h = get_piece_true_height(ap.get("class_name", ""))
+                                                ap["estimated_height_mm"] = sm_h
+                                                ap["true_height_mm"] = true_h
+                                                if true_h is not None:
+                                                    diff_h = abs(sm_h - true_h)
+                                                    ap["height_error_mm"] = sm_h - true_h
+                                                    if diff_h <= 5.0:
+                                                        ap["square_color"] = "green"
+                                                    elif diff_h <= 10.0:
+                                                        ap["square_color"] = "yellow"
+                                                    else:
+                                                        ap["square_color"] = "red" 
+
                             cached_pieces = assigned
-                            current_fen = grid_8x8.generate_fen(cached_pieces)
+                            current_fen = active_grid.generate_fen(cached_pieces) if hasattr(active_grid, 'generate_fen') else ''
                 else:
                     # Intermediate Frame: Giữ nguyên vị trí 2D mượt mà của quân cờ,
                     # chỉ cập nhật tọa độ 3D theo tư thế camera mới nhất (không làm nhảy bounding box)
@@ -891,17 +1426,113 @@ def run_chessboard8x8_live(
                                     p3d_corr = apply_pedestal_offset(p3d, cam_pos_3d, radius_mm=12.5)
                                     p_key = f"tr_{p.get('track_id', 0)}"
                                     p["position_3d"] = spatial_filter.update_and_smooth(p_key, p3d_corr)
+                                    bx = p.get("bbox")
+                                    if bx and len(bx) == 4:
+                                        top_px = ((bx[0] + bx[2]) / 2.0, bx[1])
+                                        raw_h = projection.compute_piece_height(ref_px, top_px, pose, base_3d=p["position_3d"])
+                                        if raw_h is not None:
+                                            sm_h = spatial_filter.update_height(p_key, raw_h)
+                                            true_h = get_piece_true_height(p.get("class_name", ""))
+                                            p["estimated_height_mm"] = sm_h
+                                            p["true_height_mm"] = true_h
+                                            if true_h is not None:
+                                                diff_h = abs(sm_h - true_h)
+                                                p["height_error_mm"] = sm_h - true_h
+                                                if diff_h <= 5.0:
+                                                    p["square_color"] = "green"
+                                                elif diff_h <= 10.0:
+                                                    p["square_color"] = "yellow"
+                                                else:
+                                                    p["square_color"] = "red" 
 
-                        assigned = grid_8x8.assign_pieces_to_squares(cached_pieces)
+                        if "video7" in str(source).lower() or "video6" in str(source).lower():
+                            active_grid = grid_custom
+                        elif getattr(pose, "board_type", "") == "charuco" or "video4" in str(source).lower() or "video5" in str(source).lower():
+                            active_grid = grid_charuco_a3
+                        else:
+                            active_grid = grid_custom
+                        assigned = active_grid.assign_pieces_to_squares(cached_pieces)
                         for ap in assigned:
                             cand_sq = ap.get("square", "")
                             p_id = f"tr_{ap.get('track_id', 0)}"
                             stable_sq = spatial_filter.apply_hysteresis(p_id, cand_sq)
                             ap["square"] = stable_sq
+
+                            # Tinh chỉnh chiều cao dựa trên tâm ô cờ lý thuyết (Square Regularization)
+                            if stable_sq:
+                                sq_c = active_grid.square_to_center(stable_sq)
+                                if sq_c and ap.get("position_3d") is not None:
+                                    # Bù trừ bán kính chân đế động theo hướng camera
+                                    ptype_k = str(ap.get("class_name", "")).replace("white_", "").replace("black_", "").lower()
+                                    r_ped = {"pawn": 12.0, "rook": 13.0, "knight": 13.5, "bishop": 14.0, "queen": 16.0, "king": 17.0}.get(ptype_k, 13.5)
+                                    R_c_cur, _ = cv2.Rodrigues(pose.rvec)
+                                    C_cur = -R_c_cur.T @ pose.tvec.flatten()
+                                    u_cam_v = ap["position_3d"][:2] - C_cur[:2]
+                                    n_cam_v = np.linalg.norm(u_cam_v)
+                                    p_comp_2d = ap["position_3d"][:2] + r_ped * (u_cam_v / n_cam_v) if n_cam_v > 1e-3 else ap["position_3d"][:2]
+
+                                    # Snap-to-Grid: nếu khoảng cách tới tâm ô <= 16.5mm (nửa ô cờ A3), snap 100% về tâm ô
+                                    dist_to_center = float(np.linalg.norm(p_comp_2d - sq_c[:2]))
+                                    if dist_to_center <= (active_grid.square_size_mm * 0.45):
+                                        base_reg = np.array([sq_c[0], sq_c[1], 0.0], dtype=np.float64)
+                                        ap["position_3d"] = base_reg.copy()
+                                    else:
+                                        base_reg = np.array([
+                                            0.75 * sq_c[0] + 0.25 * p_comp_2d[0],
+                                            0.75 * sq_c[1] + 0.25 * p_comp_2d[1],
+                                            0.0,
+                                        ], dtype=np.float64)
+                                    bx = ap.get("bbox")
+                                    ref_px = ap.get("bottom_center_pixel")
+                                    if bx and len(bx) == 4 and ref_px:
+                                        top_px = ((bx[0] + bx[2]) / 2.0, bx[1])
+                                        ref_h = projection.compute_piece_height(ref_px, top_px, pose, base_3d=base_reg)
+                                        if ref_h is not None:
+                                            sm_h = spatial_filter.update_height(p_id, ref_h)
+                                            true_h = get_piece_true_height(ap.get("class_name", ""))
+                                            ap["estimated_height_mm"] = sm_h
+                                            ap["true_height_mm"] = true_h
+                                            if true_h is not None:
+                                                diff_h = abs(sm_h - true_h)
+                                                ap["height_error_mm"] = sm_h - true_h
+                                                if diff_h <= 5.0:
+                                                    ap["square_color"] = "green"
+                                                elif diff_h <= 10.0:
+                                                    ap["square_color"] = "yellow"
+                                                else:
+                                                    ap["square_color"] = "red" 
                         cached_pieces = assigned
-                        current_fen = grid_8x8.generate_fen(cached_pieces)
+                        current_fen = active_grid.generate_fen(cached_pieces) if hasattr(active_grid, 'generate_fen') else ''
 
                 chess_pieces = cached_pieces
+
+                # Ghi nhận dữ liệu ra CSV Dump nếu được yêu cầu
+                if csv_writer is not None:
+                    for p in chess_pieces:
+                        pos = p.get("position_3d")
+                        x_val = f"{pos[0]:.2f}" if pos is not None else ""
+                        y_val = f"{pos[1]:.2f}" if pos is not None else ""
+                        est_h = p.get("estimated_height_mm")
+                        tr_h = p.get("true_height_mm")
+                        er_h = p.get("height_error_mm")
+                        csv_writer.writerow([
+                            frame_idx,
+                            p.get("track_id", -1),
+                            p.get("class_name", ""),
+                            p.get("fen_char", ""),
+                            f"{p.get('confidence', 0.0):.3f}",
+                            p.get("square", ""),
+                            p.get("square_color", ""),
+                            f"{est_h:.2f}" if est_h is not None else "",
+                            f"{tr_h:.2f}" if tr_h is not None else "",
+                            f"{er_h:.2f}" if er_h is not None else "",
+                            x_val,
+                            y_val,
+                            f"{cam_azimuth:.1f}",
+                            cam_sector,
+                            1 if pose.valid else 0,
+                            f"{pose.reproj_error_px:.2f}" if pose.valid else "",
+                        ])
 
                 # C. Vẽ 2D Video Feed có chú thích
                 annotated_2d = frame.copy()
@@ -925,39 +1556,111 @@ def run_chessboard8x8_live(
                     cv2.line(annotated_2d, tuple(o_pt), tuple(pa[3]), (255, 120, 0), 3, cv2.LINE_AA)  # Z: Vàng
                     cv2.putText(annotated_2d, "A1 (0,0)", tuple(o_pt + [-10, -8]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA)
 
-                # Vẽ Bounding Box và ô cờ cho quân cờ trên ảnh 2D
+                # Tính toán góc độ quan sát của camera đối với tâm bàn cờ
+                cam_azimuth = 0.0
+                cam_elevation = 0.0
+                cam_sector = "N/A"
+                if pose.valid and active_grid is not None and pose.rvec is not None and pose.tvec is not None:
+                    R_c, _ = cv2.Rodrigues(pose.rvec)
+                    C_world = -R_c.T @ pose.tvec.flatten()
+                    cx_board = active_grid.cols * active_grid.square_size_mm / 2.0
+                    cy_board = active_grid.rows * active_grid.square_size_mm / 2.0
+                    dx = C_world[0] - cx_board
+                    dy = C_world[1] - cy_board
+                    cam_azimuth = float(np.degrees(np.arctan2(dy, dx)))
+                    dist_xy = float(np.sqrt(dx**2 + dy**2))
+                    cam_elevation = float(np.degrees(np.arctan2(abs(C_world[2]), max(1e-3, dist_xy))))
+
+                    if -45.0 <= cam_azimuth < 45.0:
+                        cam_sector = "Right (+X)"
+                    elif 45.0 <= cam_azimuth < 135.0:
+                        cam_sector = "Front (+Y)"
+                    elif -135.0 <= cam_azimuth < -45.0:
+                        cam_sector = "Back (-Y)"
+                    else:
+                        cam_sector = "Left (-X)"
+
+                # Bỏ tô màu trên ô cờ theo yêu cầu của user.
+                # Thay bằng TÔ MÀU MỜ BBOX (Alpha Blend 0.35) theo 3 bậc dung sai sai số
+                overlay_boxes = annotated_2d.copy()
+                has_colored_box = False
+
                 for p in chess_pieces:
                     box = p.get("bbox")
                     if box:
-                        x1, y1, x2, y2 = [int(v) for v in box]
+                        x1, y1, x2, y2 = [int(round(v)) for v in box]
                         c_name = str(p.get("class_name", "")).lower()
-                        is_white = c_name.startswith("white")
-                        box_col = (255, 225, 60) if is_white else (70, 70, 250)
-                        sq_str = p.get("square", "")
-                        fen_ch = p.get("fen_char", "")
-                        label = f"{fen_ch}@{sq_str}" if sq_str else fen_ch
+                        color_tag = p.get("square_color")
+                        h_val = p.get("estimated_height_mm")
+                        t_val = p.get("true_height_mm")
+                        if h_val is not None and t_val is not None:
+                            d_val = abs(h_val - t_val)
+                            box_col = (0, 220, 0) if d_val <= 5.0 else ((0, 220, 255) if d_val <= 10.0 else (0, 0, 240))
+                        elif color_tag == "green":
+                            box_col = (0, 220, 0)
+                        elif color_tag == "yellow":
+                            box_col = (0, 220, 255)
+                        elif color_tag == "red":
+                            box_col = (0, 0, 240)
+                        else:
+                            is_white = c_name.startswith("white")
+                            box_col = (255, 225, 60) if is_white else (70, 70, 250)
+
+                        cv2.rectangle(overlay_boxes, (x1, y1), (x2, y2), box_col, -1)
+                        has_colored_box = True
+
+                if has_colored_box:
+                    cv2.addWeighted(overlay_boxes, 0.35, annotated_2d, 0.65, 0, annotated_2d)
+
+                # Vẽ viền nét và nhãn gọn gàng TUYỆT ĐỐI KHÔNG CÓ TỌA ĐỘ
+                for p in chess_pieces:
+                    box = p.get("bbox")
+                    if box:
+                        x1, y1, x2, y2 = [int(round(v)) for v in box]
+                        c_name = str(p.get("class_name", "")).lower()
+                        color_tag = p.get("square_color")
+                        h_val = p.get("estimated_height_mm")
+                        t_val = p.get("true_height_mm")
+                        if h_val is not None and t_val is not None:
+                            d_val = abs(h_val - t_val)
+                            box_col = (0, 220, 0) if d_val <= 5.0 else ((0, 220, 255) if d_val <= 10.0 else (0, 0, 240))
+                            tag = "OK" if d_val <= 5.0 else ("WARN" if d_val <= 10.0 else "ERR")
+                        elif color_tag == "green":
+                            box_col = (0, 220, 0); tag = "OK"
+                        elif color_tag == "yellow":
+                            box_col = (0, 220, 255); tag = "WARN"
+                        elif color_tag == "red":
+                            box_col = (0, 0, 240); tag = "ERR"
+                        else:
+                            is_white = c_name.startswith("white")
+                            box_col = (255, 225, 60) if is_white else (70, 70, 250)
+                            tag = ""
 
                         cv2.rectangle(annotated_2d, (x1, y1), (x2, y2), box_col, 2, cv2.LINE_AA)
 
-                        # Chấm điểm tiếp xúc đáy
-                        ref = p.get("bottom_center_pixel") or p.get("ref_point")
-                        if ref:
-                            cv2.circle(annotated_2d, (int(ref[0]), int(ref[1])), 4, (0, 0, 255), -1, cv2.LINE_AA)
+                        # Bỏ mọi số đo tọa độ (x1, y1, x2, y2), chỉ giữ tên quân và trạng thái
+                        short_name = c_name.replace("white_", "W-").replace("black_", "B-").upper()
+                        label = f"{short_name} [{tag}]" if tag else short_name
 
-                        # Badge nhãn
-                        lbl_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                        lbl_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
                         cv2.rectangle(annotated_2d, (x1, y1 - 18), (x1 + lbl_size[0] + 6, y1), box_col, -1)
-                        cv2.putText(annotated_2d, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+                        cv2.putText(annotated_2d, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 1, cv2.LINE_AA)
 
                 # Vẽ viền marker ArUco nhìn thấy
                 if pose.valid:
                     gray_sub = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-                    m_corners, m_ids, _ = pose_estimator.detector.detectMarkers(gray_sub)
-                    if m_ids is not None:
-                        for mc, mid in zip(m_corners, m_ids.flatten()):
-                            if int(mid) in pose_estimator.marker_3d_map:
-                                pts = mc[0].astype(int)
-                                cv2.polylines(annotated_2d, [pts], isClosed=True, color=(0, 255, 0), thickness=2, lineType=cv2.LINE_AA)
+                    det_obj = getattr(pose_estimator, "detector", None)
+                    if det_obj is None and hasattr(pose_estimator, "chessboard_estimator"):
+                        det_obj = getattr(pose_estimator.chessboard_estimator, "detector", None)
+                    if det_obj is not None:
+                        try:
+                            m_corners, m_ids, _ = det_obj.detectMarkers(gray_sub)
+                            if m_ids is not None:
+                                for mc in m_corners:
+                                    pts = mc[0].astype(int)
+                                    cv2.polylines(annotated_2d, [pts], isClosed=True, color=(0, 255, 0), thickness=2, lineType=cv2.LINE_AA)
+                        except Exception:
+                            pass
 
                 # Căn giữa letterboxing khung hình 2D
                 left_panel, _, _, _ = make_letterboxed_frame(annotated_2d, half_w, canvas_h)
@@ -967,11 +1670,22 @@ def run_chessboard8x8_live(
                 fps_curr = 1.0 / max(1e-4, t_frame_end - t_frame_start)
                 fps_smooth = fps_curr if fps_smooth == 0.0 else 0.85 * fps_smooth + 0.15 * fps_curr
 
-                cv2.rectangle(left_panel, (0, 0), (half_w, 42), (18, 18, 20), -1)
+                cv2.rectangle(left_panel, (0, 0), (half_w, 64), (18, 18, 20), -1)
+                # Header OSD
+                cv2.putText(left_panel, f"CAMERA STREAM | {fps_smooth:.1f} FPS", (12, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (230, 230, 230), 1, cv2.LINE_AA)
                 pose_status = f"POSE: OK (RMS={pose.reproj_error_px:.2f}px)" if pose.valid else "POSE: SEARCHING"
                 pose_col = (0, 255, 0) if pose.valid else (0, 0, 255)
-                cv2.putText(left_panel, f"CAMERA STREAM | {fps_smooth:.1f} FPS", (12, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (230, 230, 230), 1, cv2.LINE_AA)
                 cv2.putText(left_panel, pose_status, (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.40, pose_col, 1, cv2.LINE_AA)
+                # Góc độ Camera
+                cam_str = f"CAM ANGLE: {cam_sector} | Az={cam_azimuth:.0f}deg El={cam_elevation:.0f}deg"
+                cv2.putText(left_panel, cam_str, (12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 220, 255), 1, cv2.LINE_AA)
+                # Legend BBox dung sai bên phải
+                cv2.circle(left_panel, (half_w - 240, 20), 4, (0, 220, 0), -1, cv2.LINE_AA)
+                cv2.putText(left_panel, "<=5mm", (half_w - 230, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 240, 200), 1, cv2.LINE_AA)
+                cv2.circle(left_panel, (half_w - 165, 20), 4, (0, 220, 255), -1, cv2.LINE_AA)
+                cv2.putText(left_panel, "5-10mm", (half_w - 155, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 240, 200), 1, cv2.LINE_AA)
+                cv2.circle(left_panel, (half_w - 90, 20), 4, (0, 0, 240), -1, cv2.LINE_AA)
+                cv2.putText(left_panel, ">10mm", (half_w - 80, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 240, 200), 1, cv2.LINE_AA)
 
                 # D. Render Khung nhìn 3D Digital Twin trên panel phải
                 right_panel = render_3d_viewport_chessboard8x8(
@@ -979,9 +1693,10 @@ def run_chessboard8x8_live(
                     camera_rvec=pose.rvec if pose.valid else None,
                     trajectory=trajectory,
                     chess_pieces=chess_pieces,
-                    grid_8x8=grid_8x8,
+                    grid_8x8=active_grid,
                     width=half_w,
                     height=canvas_h,
+                    orbit_camera=orbit_camera,
                 )
 
                 # E. Ghép màn hình kép (Dual Dashboard)
@@ -998,6 +1713,21 @@ def run_chessboard8x8_live(
                 if save_snapshot_path and (frame_idx == 1 or not is_paused):
                     Path(save_snapshot_path).parent.mkdir(parents=True, exist_ok=True)
                     cv2.imwrite(save_snapshot_path, dashboard)
+            else:
+                # Khi đang tạm dừng (is_paused), nếu người dùng xoay/zoom chuột thì re-render ngay lập tức
+                if orbit_camera.dirty:
+                    right_panel = render_3d_viewport_chessboard8x8(
+                        camera_pos=cam_pos_3d,
+                        camera_rvec=pose.rvec if pose.valid else None,
+                        trajectory=trajectory,
+                        chess_pieces=chess_pieces,
+                        grid_8x8=active_grid,
+                        width=half_w,
+                        height=canvas_h,
+                        orbit_camera=orbit_camera,
+                    )
+                    dashboard[:, half_w:] = right_panel
+                    orbit_camera.dirty = False
 
             # Hiển thị hoặc xử lý phím bấm
             if not headless:
@@ -1038,7 +1768,7 @@ def run_chessboard8x8_live(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Khởi chạy hệ thống Định vị 3D Bàn cờ vua 8x8 ArUco (Digital Twin High-Performance)."
+        description="Khởi chạy hệ thống Định vị 3D Bàn cờ 8x8 (Digital Twin High-Performance)."
     )
     parser.add_argument(
         "--source",
@@ -1057,6 +1787,17 @@ def main():
         "-b",
         default=str(DEFAULT_CHESSBOARD_CFG),
         help=f"File cấu hình bàn cờ 8x8. Mặc định: {DEFAULT_CHESSBOARD_CFG}",
+    )
+    parser.add_argument(
+        "--charuco-cfg",
+        default=str(DEFAULT_CHARUCO_CFG),
+        help=f"File cấu hình ChArUco A3. Mặc định: {DEFAULT_CHARUCO_CFG}",
+    )
+    parser.add_argument(
+        "--board-type",
+        default="auto",
+        choices=["auto", "charuco", "chessboard_8x8"],
+        help="Loại bảng: auto | charuco | chessboard_8x8. Mặc định: auto",
     )
     parser.add_argument(
         "--model",
@@ -1125,6 +1866,11 @@ def main():
         default=None,
         help="Số khung hình tối đa cần xử lý trước khi thoát.",
     )
+    parser.add_argument(
+        "--dump-csv",
+        default=None,
+        help="Đường dẫn file CSV xuất thông số đo đạc theo frame.",
+    )
 
     args = parser.parse_args()
 
@@ -1132,6 +1878,8 @@ def main():
         source=args.source,
         calib_file=args.calib,
         board_cfg_file=args.board_cfg,
+        charuco_cfg_file=args.charuco_cfg,
+        board_type=args.board_type,
         model_weights=args.model,
         conf_thresh=args.conf,
         imgsz=args.imgsz,
@@ -1144,6 +1892,7 @@ def main():
         save_snapshot_path=args.save_snapshot,
         headless=args.headless,
         max_frames=args.max_frames,
+        dump_csv_path=args.dump_csv,
     )
 
 

@@ -1,0 +1,19 @@
+bang:
+  kieu: charuco
+  ten: Ban co ChArUco 8x8 Chuan Quoc Te (O 40mm, Marker 32mm)
+  o_ngang: 8
+  o_doc: 8
+  canh_o_mm: 40.0
+  marker_mm: 32.0
+  ti_le_marker_tren_o: 0.8
+  tu_dien: 4X4_100
+  chieu_rong_vien_mm: 20.0
+  tong_rong_mm: 320.0
+  tong_dai_mm: 320.0
+  tong_rong_ca_vien_mm: 360.0
+  tong_dai_ca_vien_mm: 360.0
+ban_in:
+  dpi: 300
+  canh_o_mm: 40.0
+  marker_mm: 32.0
+  tong_mm: 360.0

@@ -26,10 +26,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from mono_eye.chess_pipeline import ChessMonoEyePipeline
+from mono_eye.viewer3d.piece_mapper import square_to_board_center_mm
 
-DEFAULT_CALIB = ROOT / "data" / "calib" / "camera.yaml"
-DEFAULT_BOARD = ROOT / "bang_calib_A4.yaml"
+# Cấu hình mặc định cho Bàn ChArUco 8x8 Khổ A2 (ô 40mm) và Video thử nghiệm
+DEFAULT_CALIB = ROOT / "data" / "calib" / "camera_phone_video7.yaml"
+DEFAULT_BOARD = ROOT / "configs" / "bang_charuco_8x8_o40mm.yaml"
 DEFAULT_MODEL = ROOT / "data" / "models" / "best.pt"
+
+try:
+    from mono_eye.viewer3d.live_view import Live3DView
+    HAVE_VIEWER3D = True
+except Exception:
+    HAVE_VIEWER3D = False
 
 
 def render_3d_viewport_chess(
@@ -191,57 +199,62 @@ def render_3d_viewport_chess(
             cv2.LINE_AA,
         )
 
-    # 6. Vẽ các quân cờ 3D trên mặt bàn (Chess Pieces)
+    # 6. Vẽ các quân cờ 3D trên mặt bàn (Chess Pieces) - snap 100% vào tâm ô cờ
     if chess_pieces:
         for p in chess_pieces:
+            sq = p.get("square")
             pos_3d = p.get("position_3d")
-            if pos_3d is not None:
-                # Tọa độ đáy quân cờ trên mặt bàn
-                base_pt = np.array([float(pos_3d[0]), float(pos_3d[1]), 0.0], dtype=np.float64)
-                
-                # Chiều cao mô phỏng của quân cờ theo loại
-                c_name = str(p.get("class_name", "")).lower()
-                is_white = c_name.startswith("white")
-                fen_char = p.get("fen_char", "?")
-                
-                if "king" in c_name or "queen" in c_name:
-                    p_height = 50.0
-                elif "bishop" in c_name or "knight" in c_name:
-                    p_height = 42.0
-                elif "rook" in c_name:
-                    p_height = 36.0
-                else:
-                    p_height = 28.0
+            sq_center = square_to_board_center_mm(sq) if sq else None
+            if sq_center is not None:
+                px, py = sq_center
+            elif pos_3d is not None:
+                px, py = float(pos_3d[0]), float(pos_3d[1])
+            else:
+                continue
 
-                top_pt = np.array([float(pos_3d[0]), float(pos_3d[1]), p_height], dtype=np.float64)
+            base_pt = np.array([px, py, 0.0], dtype=np.float64)
+            c_name = str(p.get("class_name", "")).lower()
+            is_white = c_name.startswith("white")
+            fen_char = p.get("fen_char", "?")
+            
+            if "king" in c_name or "queen" in c_name:
+                p_height = 50.0
+            elif "bishop" in c_name or "knight" in c_name:
+                p_height = 42.0
+            elif "rook" in c_name:
+                p_height = 36.0
+            else:
+                p_height = 28.0
 
-                b_2d = proj(base_pt)[0].astype(int)
-                t_2d = proj(top_pt)[0].astype(int)
+            top_pt = np.array([px, py, p_height], dtype=np.float64)
 
-                # Màu sắc: Trắng (Cyan/Vàng nhạt), Đen (Đỏ/Tím đậm)
-                piece_col = (255, 230, 80) if is_white else (60, 60, 240)
-                edge_col = (200, 180, 40) if is_white else (30, 30, 180)
+            b_2d = proj(base_pt)[0].astype(int)
+            t_2d = proj(top_pt)[0].astype(int)
 
-                # Vẽ thân trụ 3D của quân cờ
-                cv2.line(canvas, tuple(b_2d), tuple(t_2d), piece_col, 3, cv2.LINE_AA)
+            # Màu sắc: Trắng (Cyan/Vàng nhạt), Đen (Đỏ/Tím đậm)
+            piece_col = (255, 230, 80) if is_white else (60, 60, 240)
+            edge_col = (200, 180, 40) if is_white else (30, 30, 180)
 
-                # Vẽ đế và đỉnh quân cờ
-                cv2.circle(canvas, tuple(b_2d), 7, edge_col, -1, cv2.LINE_AA)
-                cv2.circle(canvas, tuple(b_2d), 9, (255, 255, 255), 1, cv2.LINE_AA)
-                cv2.circle(canvas, tuple(t_2d), 6, piece_col, -1, cv2.LINE_AA)
+            # Vẽ thân trụ 3D của quân cờ
+            cv2.line(canvas, tuple(b_2d), tuple(t_2d), piece_col, 3, cv2.LINE_AA)
 
-                # Chú thích FEN và tọa độ
-                label = f"{fen_char}: ({pos_3d[0]:.0f}, {pos_3d[1]:.0f})"
-                cv2.putText(
-                    canvas,
-                    label,
-                    (t_2d[0] + 8, t_2d[1] - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.42,
-                    (255, 255, 255),
-                    1,
-                    cv2.LINE_AA,
-                )
+            # Vẽ đế và đỉnh quân cờ
+            cv2.circle(canvas, tuple(b_2d), 7, edge_col, -1, cv2.LINE_AA)
+            cv2.circle(canvas, tuple(b_2d), 9, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.circle(canvas, tuple(t_2d), 6, piece_col, -1, cv2.LINE_AA)
+
+            # Chú thích FEN và tọa độ
+            label = f"{fen_char}: ({px:.0f}, {py:.0f})"
+            cv2.putText(
+                canvas,
+                label,
+                (t_2d[0] + 8, t_2d[1] - 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
     # Header cho Viewport 3D
     cv2.putText(
@@ -275,8 +288,16 @@ def get_available_videos() -> list[tuple[str, Path]]:
     videos = sorted(list(vdir.glob("*.mp4")))
     result = []
     for v in videos:
-        name = v.name
-        if "340" in name:
+        name = v.name.lower()
+        if "video8" in name:
+            label = "Video 8: Ban Co ChArUco 8x8 A2 (video8.mp4)"
+        elif "video7" in name:
+            label = "Video 7: Ban co A3 (video7.mp4)"
+        elif "video6" in name:
+            label = "Video 6: Ban co A4 (video6.mp4)"
+        elif "video5" in name:
+            label = "Video 5: 32 Quan day du (video5.mp4)"
+        elif "340" in name:
             label = "Video 1: Quân Tượng đen (Bishop)"
         elif "349" in name:
             label = "Video 2: Quân Mã đen (Knight)"
@@ -351,6 +372,10 @@ def run_live(
     rotation: int = 0,
     mirror: bool = False,
     loop: bool = True,
+    use_3d_pbr: bool = True,
+    three_d_mode: str = "orbit",
+    view_width: int = 800,
+    view_height: int = 600,
 ):
     """Chạy vòng lặp thời gian thực từ Camera hoặc file Video và hiển thị song song 2D + 3D."""
     current_rot = rotation % 360
@@ -415,12 +440,14 @@ def run_live(
 
     trajectory: list[np.ndarray] = []
     window_name = "CHESS MONO EYE 3D - DIGITAL TWIN (Trai: Camera 2D | Phai: Khong gian 3D)"
-    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, view_width * 2, view_height)
 
     print("=" * 70)
     print("🖥 ĐANG HIỂN THỊ CỬA SỔ DUY NHẤT: BÊN TRÁI LÀ CAMERA, BÊN PHẢI LÀ KHÔNG GIAN 3D")
+    print(f"📐 Kích thước hiển thị: {view_width * 2}x{view_height} (Mỗi nửa {view_width}x{view_height}, có thể kéo dãn cửa sổ tùy ý)")
     print("▶ Phím tắt chuyển đổi nguồn phát & điều khiển:")
-    print("  - [1], [2], [3], [4]: Chuyển trực tiếp sang Video 1 - Video 4")
+    print("  - [1] - [8]: Chuyển trực tiếp sang Video 1 - Video 8")
     print("  - [C]: Chuyển sang Camera trực tiếp (toggle Camera 1 <-> 0)")
     print("  - [V]: Chuyển sang Video tiếp theo trong danh sách")
     print("  - [SPACE]: Tạm dừng / Tiếp tục phát video")
@@ -428,6 +455,23 @@ def run_live(
     print("  - [M]: Bật / tắt chế độ lật gương (Mirror)")
     print("  - [Q] hoặc [ESC]: Thoát chương trình")
     print("=" * 70)
+
+    # Khởi tạo 3D PBR Viewport nếu khả dụng
+    live3d = None
+    if use_3d_pbr and HAVE_VIEWER3D:
+        try:
+            live3d = Live3DView(width=view_width, height=view_height, default_mode=three_d_mode)
+            print(f"[RealtimeViz] Da khoi tao ModernGL 3D PBR Viewport ({view_width}x{view_height}) thanh cong!")
+        except Exception as e:
+            print(f"[RealtimeViz] Khong the khoi tao ModernGL 3D ({e}), dung fallback 2.5D wireframe.")
+            live3d = None
+
+    def on_mouse_event(event, x, y, flags, param):
+        if live3d is not None and x >= view_width:
+            # Tọa độ cục bộ của nửa khung hình 3D bên phải
+            live3d.handle_mouse(event, x - view_width, y, flags)
+
+    cv2.setMouseCallback(window_name, on_mouse_event)
 
     prev_time = time.time()
     failed_count = 0
@@ -490,22 +534,29 @@ def run_live(
                 cam_rvec = result.pose.rvec
                 trajectory.append(cam_center)
 
-            # Tạo khung nhìn phối cảnh 3D thời gian thực (640x480)
-            view_3d = render_3d_viewport_chess(
-                camera_pos=cam_center,
-                camera_rvec=cam_rvec,
-                trajectory=trajectory,
-                chess_pieces=result.pieces,
-                width=640,
-                height=480,
-            )
+            # Tạo khung nhìn phối cảnh 3D thời gian thực (view_width x view_height)
+            if live3d is not None:
+                view_3d = live3d.update(
+                    chess_result=result,
+                    camera_matrix=pipeline.camera.K,
+                    image_size=(pipeline.camera.width, pipeline.camera.height),
+                )
+            else:
+                view_3d = render_3d_viewport_chess(
+                    camera_pos=cam_center,
+                    camera_rvec=cam_rvec,
+                    trajectory=trajectory,
+                    chess_pieces=result.pieces,
+                    width=view_width,
+                    height=view_height,
+                )
 
-            # Chuẩn bị khung 2D camera (resize sang 640x480 để khớp chiều cao)
-            cam_view = cv2.resize(vis_2d, (640, 480))
+            # Chuẩn bị khung 2D camera (resize sang view_width x view_height để khớp chiều cao)
+            cam_view = cv2.resize(vis_2d, (view_width, view_height))
 
             # 1. Header Bar trên 2D Camera View (Hiệu ứng kính mờ tối sang trọng)
             overlay = cam_view.copy()
-            cv2.rectangle(overlay, (0, 0), (640, 42), (18, 18, 18), -1)
+            cv2.rectangle(overlay, (0, 0), (view_width, 42), (18, 18, 18), -1)
             cv2.addWeighted(overlay, 0.75, cam_view, 0.25, 0, cam_view)
 
             # Badge nguồn phát
@@ -522,41 +573,41 @@ def run_live(
 
             # FPS và Device bên phải Header
             dev_str = "CUDA" if "cuda" in str(pipeline.detector.device).lower() else "CPU"
-            cv2.putText(cam_view, f"{fps:.1f} FPS | {dev_str}", (520, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 230, 255), 1, cv2.LINE_AA)
+            cv2.putText(cam_view, f"{fps:.1f} FPS | {dev_str}", (view_width - 130, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 230, 255), 1, cv2.LINE_AA)
 
             # 2. Sub-header Status Pill (Báo trạng thái bám vết ChArUco & nhận diện quân cờ)
             if result.pose.valid:
-                cv2.rectangle(cam_view, (10, 48), (630, 74), (20, 45, 20), -1)
-                cv2.rectangle(cam_view, (10, 48), (630, 74), (0, 220, 100), 1)
+                cv2.rectangle(cam_view, (10, 48), (view_width - 10, 74), (20, 45, 20), -1)
+                cv2.rectangle(cam_view, (10, 48), (view_width - 10, 74), (0, 220, 100), 1)
                 st_msg = f"✓ CHARUCO OK ({result.pose.num_corners} pts | err={result.pose.reproj_error_px:.1f}px) | Quan co 3D: {len(result.valid_pieces)}/{result.num_pieces}"
                 cv2.putText(cam_view, st_msg, (18, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 120), 1, cv2.LINE_AA)
             else:
-                cv2.rectangle(cam_view, (10, 48), (630, 74), (20, 25, 45), -1)
-                cv2.rectangle(cam_view, (10, 48), (630, 74), (0, 140, 255), 1)
+                cv2.rectangle(cam_view, (10, 48), (view_width - 10, 74), (20, 25, 45), -1)
+                cv2.rectangle(cam_view, (10, 48), (view_width - 10, 74), (0, 140, 255), 1)
                 st_msg = "⚠ TIM KIEM BAN CO CHARUCO A4... (Vui long dua ban co vao khung hinh)"
                 cv2.putText(cam_view, st_msg, (18, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 165, 255), 1, cv2.LINE_AA)
 
             # 3. Video Progress Bar (Nếu đang phát video)
             if is_video and total_frames > 0:
-                prog_w = int(640 * cur_f / max(1, total_frames))
-                cv2.rectangle(cam_view, (0, 442), (640, 446), (40, 40, 40), -1)
-                cv2.rectangle(cam_view, (0, 442), (prog_w, 446), (255, 215, 0), -1)
+                prog_w = int(view_width * cur_f / max(1, total_frames))
+                cv2.rectangle(cam_view, (0, view_height - 38), (view_width, view_height - 34), (40, 40, 40), -1)
+                cv2.rectangle(cam_view, (0, view_height - 38), (prog_w, view_height - 34), (255, 215, 0), -1)
 
             # 4. Footer Toolbar Overlay
             overlay_bot = cam_view.copy()
-            cv2.rectangle(overlay_bot, (0, 448), (640, 480), (18, 18, 18), -1)
+            cv2.rectangle(overlay_bot, (0, view_height - 32), (view_width, view_height), (18, 18, 18), -1)
             cv2.addWeighted(overlay_bot, 0.80, cam_view, 0.20, 0, cam_view)
 
             if is_video:
-                foot_ctl = "[1-4]: Chon Video | [C]: Cam Live | [V]: Video tiep | [Space]: Dung | [R]: Phat lai | [Q]: Thoat"
+                foot_ctl = "[1-8]: Video | [C]: Cam | [V]: Tiep | [Space]: Dung | [R]: Phat lai | [O]: 3D Cam | [Q]: Thoat"
             else:
-                foot_ctl = f"[C]: Doi Cam | [1-4]: Chon Video | [R]: Xoay ({rot_names.get(current_rot, f'{current_rot}')}) | [M]: Mirror | [Q]: Thoat"
-            cv2.putText(cam_view, foot_ctl, (12, 469), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (220, 220, 220), 1, cv2.LINE_AA)
+                foot_ctl = f"[C]: Cam | [1-8]: Video | [R]: Xoay ({rot_names.get(current_rot, f'{current_rot}')}) | [M]: Mirror | [O]: 3D Cam | [Q]: Thoat"
+            cv2.putText(cam_view, foot_ctl, (12, view_height - 11), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (220, 220, 220), 1, cv2.LINE_AA)
 
             # 5. OSD Popup Banner (Hiển thị khi chuyển nguồn hoặc thao tác phím)
             if time.time() < osd_expire and osd_msg:
                 box_w, box_h = 460, 44
-                bx1, by1 = (640 - box_w) // 2, 218
+                bx1, by1 = (view_width - box_w) // 2, (view_height - box_h) // 2
                 overlay_osd = cam_view.copy()
                 cv2.rectangle(overlay_osd, (bx1, by1), (bx1 + box_w, by1 + box_h), (20, 20, 20), -1)
                 cv2.addWeighted(overlay_osd, 0.85, cam_view, 0.15, 0, cam_view)
@@ -583,6 +634,8 @@ def run_live(
                 if is_video:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     trajectory.clear()
+                    if live3d is not None:
+                        live3d.reset_stabilizer()
                     osd_msg = "PHÁT LẠI VIDEO TỪ ĐẦU"
                     osd_expire = time.time() + 1.5
                     print("🔄 Phát lại video từ đầu...")
@@ -605,6 +658,8 @@ def run_live(
                     cap, is_video, video_path, current_label = new_cap, new_is_vid, new_vid_p, new_lbl
                     source = next_cam
                     trajectory.clear()
+                    if live3d is not None:
+                        live3d.reset_stabilizer()
                     paused = False
                     total_frames = 0
                     video_fps = 30.0
@@ -632,14 +687,16 @@ def run_live(
                         cap, is_video, video_path, current_label = new_cap, new_is_vid, new_vid_p, new_lbl
                         source = next_vid_path
                         trajectory.clear()
+                        if live3d is not None:
+                            live3d.reset_stabilizer()
                         paused = False
                         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                         video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
                         osd_msg = f"ĐÃ CHUYỂN: {current_label}"
                         osd_expire = time.time() + 2.5
                         print(f"🔄 Đã chuyển sang: {current_label}")
-            elif key in (ord("1"), ord("2"), ord("3"), ord("4")):
-                target_idx = int(chr(key)) - 1
+            elif ord("1") <= key <= ord("8"):
+                target_idx = key - ord("1")
                 if target_idx < len(available_videos):
                     target_vid = available_videos[target_idx][1]
                     new_cap, new_is_vid, new_vid_p, new_lbl = open_stream(target_vid)
@@ -648,13 +705,34 @@ def run_live(
                         cap, is_video, video_path, current_label = new_cap, new_is_vid, new_vid_p, new_lbl
                         source = target_vid
                         trajectory.clear()
+                        if live3d is not None:
+                            live3d.reset_stabilizer()
                         paused = False
                         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                         video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
                         osd_msg = f"ĐÃ CHUYỂN: {current_label}"
                         osd_expire = time.time() + 2.5
                         print(f"🔄 Đã chuyển sang: {current_label}")
+            elif key in (ord("o"), ord("O")):
+                if live3d is not None:
+                    m = live3d.toggle_mode()
+                    osd_msg = f"3D CAMERA: {m.upper()}"
+                    osd_expire = time.time() + 1.5
+                    print(f"🔄 Đổi chế độ 3D Camera: {m.upper()}")
+            elif key in (ord("+"), ord("=")):
+                if live3d is not None:
+                    live3d.zoom(0.85)
+            elif key in (ord("-"), ord("_")):
+                if live3d is not None:
+                    live3d.zoom(1.15)
+            elif key == ord("0"):
+                if live3d is not None:
+                    live3d.reset_view()
+                    osd_msg = "3D VIEW: RESET GÓC NHÌN"
+                    osd_expire = time.time() + 1.5
     finally:
+        if live3d is not None:
+            live3d.close()
         cap.release()
         cv2.destroyAllWindows()
 
@@ -667,7 +745,7 @@ def main():
     parser.add_argument("--camera-config", default=str(DEFAULT_CALIB), help="Path camera calibration YAML")
     parser.add_argument("--board-config", default=str(DEFAULT_BOARD), help="Path ChArUco board YAML")
     parser.add_argument("--model", default=str(DEFAULT_MODEL), help="Path YOLO chess model (.pt)")
-    parser.add_argument("--conf", type=float, default=0.4, help="Ngưỡng tin cậy YOLO (mặc định 0.4)")
+    parser.add_argument("--conf", type=float, default=0.45, help="Ngưỡng tin cậy YOLO (mặc định 0.45)")
     parser.add_argument("--device", default="auto", help="Inference device: 'auto', 'cuda', 'cuda:0', 'cpu'")
     parser.add_argument("--plane-z", type=float, default=0.0, help="Cao độ mặt phẳng bàn Z (mm)")
     parser.add_argument("--max-reproj", type=float, default=6.0, help="Sai số tái chiếu tối đa (px, mặc định 6.0)")
@@ -677,7 +755,18 @@ def main():
     parser.add_argument("--loop", action="store_true", default=True, help="Tự động lặp lại video khi hết (mặc định bật)")
     parser.add_argument("--no-loop", dest="loop", action="store_false", help="Không lặp lại video")
     parser.add_argument("--menu", action="store_true", help="Luôn hiển thị menu tương tác chọn nguồn đầu vào")
+    parser.add_argument("--3d-mode", dest="three_d_mode", choices=("orbit", "virtual"), default="orbit",
+                        help="Che do camera 3D: 'orbit' (xoay tu do) hoac 'virtual' (theo camera thuc)")
+    parser.add_argument("--no-3d", dest="no_3d", action="store_true", help="Tat renderer ModernGL 3D, dung legacy wireframe")
+    parser.add_argument("--preset", default=None, choices=("video8",), help="Preset cau hinh nhanh, vi du: 'video8'")
+    parser.add_argument("--view-width", type=int, default=800, help="Chieu rong moi nua khung nhin (mac dinh 800 -> tong dashboard 1600)")
+    parser.add_argument("--view-height", type=int, default=600, help="Chieu cao khung nhin (mac dinh 600)")
     args = parser.parse_args()
+
+    if args.preset == "video8":
+        args.video = "videochess/video8.mp4"
+        args.board_config = "configs/bang_charuco_8x8_o40mm.yaml"
+        args.camera_config = "data/calib/camera_phone_video7.yaml" 
 
     cam_cfg = Path(args.camera_config)
     if not cam_cfg.is_file():
@@ -757,6 +846,10 @@ def main():
         rotation=rot,
         mirror=args.mirror,
         loop=args.loop,
+        use_3d_pbr=not args.no_3d,
+        three_d_mode=args.three_d_mode,
+        view_width=args.view_width,
+        view_height=args.view_height,
     )
     return 0
 

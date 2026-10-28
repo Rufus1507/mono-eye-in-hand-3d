@@ -1,21 +1,48 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Sessions & temporary files
 sessions/
 .deps/
+scratch/
+*.patch
 
-# uv / tooling
+# uv / Python environment & tooling
 .venv/
 .pytest_cache/
 *.egg-info/
 dist/
 build/
 
-# mono_eye local data and outputs (keep folders via .gitkeep)
+# Machine learning models & weights
+*.pt
+*.onnx
+*.engine
+
+# Local data & generated outputs
 data/**/*
 !data/**/.gitkeep
 results/**/*
 !results/**/.gitkeep
-*.pt
-*.onnx
-*.patch
-scratch/
+outputs/
+
+# 3D assets runtime cache & non-essential 3D source files
+gender_3d/cache/
+*.npz
+*.npy
+*.blend
+*.blend1
+*.fbx
+*.stl
+*.x3d
+
+# Heavy test videos (>50-100MB, avoid GitHub 100MB hard limit)
+videochess/video*.mp4
+videochess/*_*.mp4
+
+# OS generated files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,157 @@
+bang:
+  kieu: chessboard_8x8
+  ten: Ban co 8x8 O 40mm Marker 32mm (Video6)
+  canh_o_mm: 40.0
+  marker_mm: 32.0
+  tu_dien: 4X4_100
+  o_ngang: 8
+  o_doc: 8
+  chieu_rong_vien_mm: 20.0
+  tong_rong_mm: 320.0
+  tong_dai_mm: 320.0
+markers:
+  15:
+    col_idx: 1
+    row_idx: 0
+    square: b1
+    rot_deg: 90
+  9:
+    col_idx: 3
+    row_idx: 0
+    square: d1
+    rot_deg: 90
+  3:
+    col_idx: 5
+    row_idx: 0
+    square: f1
+    rot_deg: 90
+  61:
+    col_idx: 7
+    row_idx: 0
+    square: h1
+    rot_deg: 0
+  18:
+    col_idx: 0
+    row_idx: 1
+    square: a2
+    rot_deg: 90
+  12:
+    col_idx: 2
+    row_idx: 1
+    square: c2
+    rot_deg: 90
+  6:
+    col_idx: 4
+    row_idx: 1
+    square: e2
+    rot_deg: 90
+  0:
+    col_idx: 6
+    row_idx: 1
+    square: g2
+    rot_deg: 90
+  16:
+    col_idx: 1
+    row_idx: 2
+    square: b3
+    rot_deg: 90
+  67:
+    col_idx: 7
+    row_idx: 2
+    square: h3
+    rot_deg: 0
+  19:
+    col_idx: 0
+    row_idx: 3
+    square: a4
+    rot_deg: 90
+  13:
+    col_idx: 2
+    row_idx: 3
+    square: c4
+    rot_deg: 90
+  7:
+    col_idx: 4
+    row_idx: 3
+    square: e4
+    rot_deg: 90
+  1:
+    col_idx: 6
+    row_idx: 3
+    square: g4
+    rot_deg: 90
+  65:
+    col_idx: 1
+    row_idx: 4
+    square: b5
+    rot_deg: 90
+  53:
+    col_idx: 5
+    row_idx: 4
+    square: f5
+    rot_deg: 90
+  70:
+    col_idx: 7
+    row_idx: 4
+    square: h5
+    rot_deg: 180
+  68:
+    col_idx: 0
+    row_idx: 5
+    square: a6
+    rot_deg: 90
+  62:
+    col_idx: 2
+    row_idx: 5
+    square: c6
+    rot_deg: 90
+  56:
+    col_idx: 4
+    row_idx: 5
+    square: e6
+    rot_deg: 90
+  50:
+    col_idx: 6
+    row_idx: 5
+    square: g6
+    rot_deg: 90
+  66:
+    col_idx: 1
+    row_idx: 6
+    square: b7
+    rot_deg: 90
+  60:
+    col_idx: 3
+    row_idx: 6
+    square: d7
+    rot_deg: 90
+  54:
+    col_idx: 5
+    row_idx: 6
+    square: f7
+    rot_deg: 90
+  64:
+    col_idx: 7
+    row_idx: 6
+    square: h7
+    rot_deg: 180
+  69:
+    col_idx: 0
+    row_idx: 7
+    square: a8
+    rot_deg: 90
+  63:
+    col_idx: 2
+    row_idx: 7
+    square: c8
+    rot_deg: 90
+  57:
+    col_idx: 4
+    row_idx: 7
+    square: e8
+    rot_deg: 90
+  51:
+    col_idx: 6
+    row_idx: 7
+    square: g8
+    rot_deg: 90

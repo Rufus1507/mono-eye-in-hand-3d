@@ -6,15 +6,24 @@ from typing import Any, Optional, Sequence
 import numpy as np
 
 
-# Chiều cao vật lý tiêu chuẩn ước lượng của các quân cờ (mm)
+# Chiều cao vật lý tiêu chuẩn ước lượng của các quân cờ (mm) theo số đo thực tế
 CHESS_PIECE_HEIGHTS: dict[str, float] = {
-    "king": 75.0,
-    "queen": 65.0,
-    "bishop": 55.0,
-    "knight": 55.0,
-    "rook": 48.0,
-    "pawn": 40.0,
+    "king": 65.0,
+    "queen": 57.0,
+    "bishop": 47.0,
+    "knight": 41.0,
+    "rook": 37.0,
+    "pawn": 33.0,
 }
+
+
+def get_piece_true_height(class_name: str) -> Optional[float]:
+    """Lấy chiều cao chuẩn danh nghĩa (mm) theo loại quân cờ (quân trắng và đen bằng nhau)."""
+    c = str(class_name).lower()
+    for piece_type, h in CHESS_PIECE_HEIGHTS.items():
+        if piece_type in c:
+            return h
+    return None
 
 
 @dataclass
@@ -27,6 +36,12 @@ class BoardGrid8x8:
     # Gốc (0,0) tại góc ngoài ô A1, +X sang cột H, +Y sang hàng 8
     col_names: list[str] = field(default_factory=lambda: ["a", "b", "c", "d", "e", "f", "g", "h"])
     rank_names: list[str] = field(default_factory=lambda: ["1", "2", "3", "4", "5", "6", "7", "8"])
+
+    def __post_init__(self):
+        if len(self.col_names) < self.cols:
+            self.col_names = [chr(ord("a") + i) for i in range(self.cols)]
+        if len(self.rank_names) < self.rows:
+            self.rank_names = [str(i + 1) for i in range(self.rows)]
 
     @property
     def width_mm(self) -> float:

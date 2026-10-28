@@ -306,6 +306,9 @@ class ChessboardPoseEstimator:
             cfg = yaml.safe_load(f)
 
         bang = cfg.get("bang", {})
+        self.kieu = str(bang.get("kieu", "chessboard_8x8"))
+        self.cols = int(bang.get("o_ngang", 8))
+        self.rows = int(bang.get("o_doc", 8))
         self.square_size_mm = float(bang.get("canh_o_mm", 40.0))
         self.marker_size_mm = float(bang.get("marker_mm", 24.0))
         dict_name = "DICT_" + str(bang.get("tu_dien", "4X4_50"))
@@ -328,20 +331,29 @@ class ChessboardPoseEstimator:
         raw_markers = cfg.get("markers", {})
         for mid, m_info in raw_markers.items():
             mid_int = int(mid)
-            c_idx = int(m_info["col_idx"])
-            r_idx = int(m_info["row_idx"])
             rot = int(m_info.get("rot_deg", 0))
 
-            sq_x = c_idx * self.square_size_mm
-            sq_y = r_idx * self.square_size_mm
-
-            # Thứ tự 4 góc theo chiều kim đồng hồ (TL -> TR -> BR -> BL)
-            canon = np.array([
-                [sq_x + offset, sq_y + offset + self.marker_size_mm, 0.0],
-                [sq_x + offset + self.marker_size_mm, sq_y + offset + self.marker_size_mm, 0.0],
-                [sq_x + offset + self.marker_size_mm, sq_y + offset, 0.0],
-                [sq_x + offset, sq_y + offset, 0.0],
-            ], dtype=np.float64)
+            if "x_mm" in m_info and "y_mm" in m_info:
+                cx = float(m_info["x_mm"])
+                cy = float(m_info["y_mm"])
+                h_m = self.marker_size_mm / 2.0
+                canon = np.array([
+                    [cx - h_m, cy + h_m, 0.0],
+                    [cx + h_m, cy + h_m, 0.0],
+                    [cx + h_m, cy - h_m, 0.0],
+                    [cx - h_m, cy - h_m, 0.0],
+                ], dtype=np.float64)
+            else:
+                c_idx = int(m_info["col_idx"])
+                r_idx = int(m_info["row_idx"])
+                sq_x = c_idx * self.square_size_mm
+                sq_y = r_idx * self.square_size_mm
+                canon = np.array([
+                    [sq_x + offset, sq_y + offset + self.marker_size_mm, 0.0],
+                    [sq_x + offset + self.marker_size_mm, sq_y + offset + self.marker_size_mm, 0.0],
+                    [sq_x + offset + self.marker_size_mm, sq_y + offset, 0.0],
+                    [sq_x + offset, sq_y + offset, 0.0],
+                ], dtype=np.float64)
 
             shift = (rot // 90) % 4
             self.marker_3d_map[mid_int] = np.roll(canon, -shift, axis=0)
@@ -470,7 +482,7 @@ class ChessboardPoseEstimator:
                         num_corners=len(inlier_idx),
                         reproj_error_px=reproj_error,
                         timestamp=t0,
-                        board_type="chessboard_8x8",
+                        board_type=self.kieu,
                     )
                     return self.last_valid_pose
 
@@ -484,10 +496,10 @@ class ChessboardPoseEstimator:
                 num_corners=self.last_valid_pose.num_corners,
                 reproj_error_px=self.last_valid_pose.reproj_error_px,
                 timestamp=t0,
-                board_type="chessboard_8x8",
+                board_type=self.kieu,
             )
 
-        return CameraPose(valid=False, num_corners=0, timestamp=t0, board_type="chessboard_8x8")
+        return CameraPose(valid=False, num_corners=0, timestamp=t0, board_type=self.kieu)
 
 
 class UnifiedPoseEstimator:
@@ -525,6 +537,17 @@ class UnifiedPoseEstimator:
             board_config=chessboard_config,
             max_reproj_error_px=max_reproj_error_px,
         )
+
+    def update_camera(self, camera: CameraModel) -> None:
+        self.camera = camera
+        if hasattr(self, "charuco_estimator"):
+            self.charuco_estimator.camera = camera
+        if hasattr(self, "chessboard_estimator"):
+            self.chessboard_estimator.camera = camera
+
+    def reset(self) -> None:
+        if hasattr(self, "chessboard_estimator") and hasattr(self.chessboard_estimator, "reset"):
+            self.chessboard_estimator.reset()
 
     def estimate(self, frame: np.ndarray, timestamp: Optional[float] = None) -> CameraPose:
         """Ước lượng Pose từ khung hình dựa trên chế độ cấu hình."""

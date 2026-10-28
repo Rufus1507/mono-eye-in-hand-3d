@@ -6,6 +6,8 @@ from typing import Any, Optional, Sequence
 import numpy as np
 
 try:
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d import Axes3D
     HAS_MATPLOTLIB = True

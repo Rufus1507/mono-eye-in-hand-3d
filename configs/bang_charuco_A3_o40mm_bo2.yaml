@@ -1,0 +1,13 @@
+bang:
+  kieu: charuco
+  o_ngang: 9
+  o_doc: 6
+  canh_o_mm: 40.0
+  marker_mm: 32.0
+  ti_le_marker_tren_o: 0.8
+  tu_dien: 4X4_100
+  id_bat_dau: 50
+  kho: A3
+ban_in:
+  canh_o_mm: 40.0
+  marker_mm: 32.0

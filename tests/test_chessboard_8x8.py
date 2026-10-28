@@ -50,7 +50,7 @@ def test_chessboard_config_loading(dummy_camera):
     )
 
     assert estimator.square_size_mm == 40.0
-    assert estimator.marker_size_mm == 24.0
+    assert estimator.marker_size_mm == 32.0
     assert len(estimator.marker_3d_map) == 32
 
     # Kiểm tra mỗi marker có đúng 4 góc 3D
@@ -277,7 +277,7 @@ def test_chessboard_real_image_detection(phone_camera):
 
     estimator = ChessboardPoseEstimator(
         camera=phone_camera,
-        board_config=ROOT / "configs" / "banco_8x8.yaml",
+        board_config=ROOT / "configs" / "banco_8x8_24mm.yaml",
         min_markers=2,
         max_reproj_error_px=10.0,
     )

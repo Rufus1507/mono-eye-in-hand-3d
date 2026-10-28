@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from mono_eye.camera_io import CameraModel, load_camera_yaml
-from mono_eye.chess_board_grid import BoardGrid8x8, compensate_piece_occlusions
+from mono_eye.chess_board_grid import BoardGrid8x8, compensate_piece_occlusions, get_piece_true_height
 from mono_eye.chess_detectors import ChessPieceDetector
 from mono_eye.config import ROOT
 from mono_eye.pose import CameraPose, PoseEstimator, UnifiedPoseEstimator
@@ -61,6 +61,10 @@ class ChessResult:
                 "bottom_center_pixel": p.get("bottom_center_pixel"),
                 "position_3d": pos_list,
                 "square": p.get("square"),
+                "estimated_height_mm": p.get("estimated_height_mm"),
+                "true_height_mm": p.get("true_height_mm"),
+                "height_error_mm": p.get("height_error_mm"),
+                "square_color": p.get("square_color"),
                 "is_occluded": p.get("is_occluded", False),
             })
 
@@ -222,6 +226,28 @@ class ChessMonoEyePipeline:
                 pieces = self.grid_8x8.assign_pieces_to_squares(pieces)
                 fen_str = self.grid_8x8.generate_fen(pieces)
 
+                # Bước 5: Ước lượng chiều cao 3D từ bounding box và chân đế
+                for p in pieces:
+                    bx = p.get("bbox")
+                    if not (bx and len(bx) == 4):
+                        continue
+                    ref_px = p.get("bottom_center_pixel")
+                    if ref_px is None:
+                        continue
+                    top_px = ((bx[0] + bx[2]) / 2.0, bx[1])
+                    raw_h = self.projection.compute_piece_height(
+                        ref_px, top_px, pose, base_3d=p.get("position_3d")
+                    )
+                    if raw_h is None:
+                        continue
+                    true_h = get_piece_true_height(p.get("class_name", ""))
+                    p["estimated_height_mm"] = raw_h
+                    p["true_height_mm"] = true_h
+                    if true_h is not None:
+                        diff_h = abs(raw_h - true_h)
+                        p["height_error_mm"] = raw_h - true_h
+                        p["square_color"] = "green" if diff_h <= 5.0 else ("yellow" if diff_h <= 10.0 else "red")
+
         active_board = getattr(pose, "board_type", self.board_type)
 
         result = ChessResult(
@@ -277,48 +303,98 @@ class ChessMonoEyePipeline:
             cv2.line(vis, p0, py, (0, 255, 0), 3, cv2.LINE_AA)    # Y: Xanh lá
             cv2.line(vis, p0, pz, (255, 0, 0), 3, cv2.LINE_AA)    # Z: Xanh dương
 
-        # 2. Vẽ thông tin quân cờ, ô cờ và tọa độ 3D
+        # 2. Tô màu mờ BBOX (Alpha Blend 0.35) theo 3 bậc dung sai sai số chiều cao
+        overlay_boxes = vis.copy()
+        has_colored_box = False
+
         for p in result.pieces:
-            bbox = p.get("bbox", [])
-            if len(bbox) != 4:
+            box = p.get("bbox")
+            if not (box and len(box) == 4):
                 continue
-            x1, y1, x2, y2 = [int(round(coord)) for coord in bbox]
-            cls_name = p.get("class_name", "")
-            fen = p.get("fen_char", "")
-            conf = p.get("confidence", 0.0)
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            c_name = str(p.get("class_name", "")).lower()
+            color_tag = p.get("square_color")
+            h_val = p.get("estimated_height_mm")
+            t_val = p.get("true_height_mm")
+
+            if h_val is not None and t_val is not None:
+                d_val = abs(h_val - t_val)
+                box_col = (0, 220, 0) if d_val <= 5.0 else ((0, 220, 255) if d_val <= 10.0 else (0, 0, 240))
+            elif color_tag == "green":
+                box_col = (0, 220, 0)
+            elif color_tag == "yellow":
+                box_col = (0, 220, 255)
+            elif color_tag == "red":
+                box_col = (0, 0, 240)
+            else:
+                is_white = c_name.startswith("white")
+                box_col = (255, 225, 60) if is_white else (70, 70, 250)
+
+            cv2.rectangle(overlay_boxes, (x1, y1), (x2, y2), box_col, -1)
+            has_colored_box = True
+
+        if has_colored_box:
+            cv2.addWeighted(overlay_boxes, 0.35, vis, 0.65, 0, vis)
+
+        # 3. Vẽ viền nét và nhãn trạng thái gọn gàng kèm thông số chiều cao
+        for p in result.pieces:
+            box = p.get("bbox")
+            if not (box and len(box) == 4):
+                continue
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            c_name = str(p.get("class_name", "")).lower()
+            color_tag = p.get("square_color")
+            h_val = p.get("estimated_height_mm")
+            t_val = p.get("true_height_mm")
+            err_val = p.get("height_error_mm")
             square = p.get("square")
+            conf = p.get("confidence", 0.0)
 
-            is_white = cls_name.startswith("white")
-            color = (255, 200, 0) if is_white else (50, 50, 255)
+            if h_val is not None and t_val is not None:
+                d_val = abs(h_val - t_val)
+                box_col = (0, 220, 0) if d_val <= 5.0 else ((0, 220, 255) if d_val <= 10.0 else (0, 0, 240))
+                tag = "OK" if d_val <= 5.0 else ("WARN" if d_val <= 10.0 else "ERR")
+            elif color_tag == "green":
+                box_col = (0, 220, 0); tag = "OK"
+            elif color_tag == "yellow":
+                box_col = (0, 220, 255); tag = "WARN"
+            elif color_tag == "red":
+                box_col = (0, 0, 240); tag = "ERR"
+            else:
+                is_white = c_name.startswith("white")
+                box_col = (255, 225, 60) if is_white else (70, 70, 250)
+                tag = ""
 
-            # Hộp nhận diện (nét đứt hoặc đổi màu nếu bị che khuất)
-            cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
+            # Viền nét BBOX
+            cv2.rectangle(vis, (x1, y1), (x2, y2), box_col, 2, cv2.LINE_AA)
 
-            # Nhãn lớp + độ tin cậy + ô cờ
-            sq_tag = f" [{square.upper()}]" if square else ""
-            label = f"{cls_name} ({fen}){sq_tag} {conf:.2f}"
-            cv2.putText(
-                vis,
-                label,
-                (x1, max(15, y1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
+            # Header chip phía trên BBOX (nền box_col, chữ đen)
+            short_name = c_name.replace("white_", "W-").replace("black_", "B-").upper()
+            label_chip = f"{short_name} [{tag}]" if tag else short_name
+            lbl_size, _ = cv2.getTextSize(label_chip, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+            cv2.rectangle(vis, (x1, max(0, y1 - 18)), (x1 + lbl_size[0] + 6, y1), box_col, -1)
+            cv2.putText(vis, label_chip, (x1 + 3, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 1, cv2.LINE_AA)
 
-            # Tọa độ 3D (mm)
+            # Dòng thông số chiều cao bên dưới BBOX
+            y_offset = y2 + 14
+            if h_val is not None and t_val is not None:
+                err_str = f"{err_val:+.0f}" if err_val is not None else f"{h_val - t_val:+.0f}"
+                h_text = f"H:{h_val:.0f}mm T:{t_val:.0f} d:{err_str}"
+                cv2.putText(vis, h_text, (x1, min(vis.shape[0] - 5, y_offset)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, box_col, 1, cv2.LINE_AA)
+                y_offset += 14
+
+            # Tọa độ 3D và ô cờ (mm)
             pos_3d = p.get("position_3d")
+            sq_tag = f"[{square.upper()}] " if square else ""
             if pos_3d is not None:
-                text_3d = f"3D: ({pos_3d[0]:.0f}, {pos_3d[1]:.0f}, {pos_3d[2]:.0f}) mm"
+                text_3d = f"{sq_tag}3D:({pos_3d[0]:.0f},{pos_3d[1]:.0f})mm"
                 cv2.putText(
                     vis,
                     text_3d,
-                    (x1, min(vis.shape[0] - 5, y2 + 15)),
+                    (x1, min(vis.shape[0] - 5, y_offset)),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4,
-                    (0, 255, 0),
+                    0.38,
+                    (0, 255, 120),
                     1,
                     cv2.LINE_AA,
                 )
@@ -327,6 +403,12 @@ class ChessMonoEyePipeline:
             u, v = p.get("bottom_center_pixel", (0, 0))
             dot_color = (0, 165, 255) if p.get("is_occluded") else (0, 255, 0)
             cv2.circle(vis, (int(round(u)), int(round(v))), 4, dot_color, -1)
+
+        # Legend 3 mức sai số ở góc dưới-trái
+        leg_y = vis.shape[0] - 12
+        cv2.putText(vis, "<=5mm (OK)", (10, leg_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 220, 0), 1, cv2.LINE_AA)
+        cv2.putText(vis, "5-10mm (WARN)", (115, leg_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 220, 255), 1, cv2.LINE_AA)
+        cv2.putText(vis, ">10mm (ERR)", (235, leg_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 240), 1, cv2.LINE_AA)
 
         # Thông tin tổng quát ở góc trên
         b_name = "8x8 CHESSBOARD" if "chessboard" in result.board_type else "CHARUCO"

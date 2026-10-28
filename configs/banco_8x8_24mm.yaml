@@ -1,0 +1,71 @@
+# Cấu hình Bàn cờ vua 8x8 thực tế tích hợp 32 ArUco Markers
+# Hình ảnh tham chiếu: picchess/banco.jpg và videochess/chessboard.mp4
+
+bang:
+  kieu: chessboard_8x8
+  ten: "Ban co 8x8 ArUco 40mm (Marker 24mm, Vien 20mm)"
+  o_ngang: 8
+  o_doc: 8
+  canh_o_mm: 40.0
+  chieu_rong_vien_mm: 20.0
+  marker_mm: 24.0
+  tu_dien: 4X4_50
+  tong_rong_mm: 320.0
+  tong_dai_mm: 320.0
+  tong_rong_ca_vien_mm: 360.0
+  tong_dai_ca_vien_mm: 360.0
+
+# Hệ tọa độ chuẩn cờ vua (Standard Chess World Frame):
+# Gốc tọa độ O(0, 0, 0) tại góc dưới-trái (mép ngoài ô A1):
+# Trục +X: Từ cột A sang cột H (0 -> 320 mm)
+# Trục +Y: Từ hàng 1 sang hàng 8 (0 -> 320 mm)
+# Trục +Z: Hướng vuông góc lên trên khỏi mặt bàn (Right-Handed)
+
+markers:
+  # Hàng 1 (r_idx = 0)
+  5:  { col_idx: 0, row_idx: 0, square: "a1", rot_deg: 180 }
+  15: { col_idx: 2, row_idx: 0, square: "c1", rot_deg: 90 }
+  16: { col_idx: 4, row_idx: 0, square: "e1", rot_deg: 90 }
+  17: { col_idx: 6, row_idx: 0, square: "g1", rot_deg: 270 }
+
+  # Hàng 2 (r_idx = 1)
+  27: { col_idx: 1, row_idx: 1, square: "b2", rot_deg: 90 }
+  31: { col_idx: 3, row_idx: 1, square: "d2", rot_deg: 0 }
+  21: { col_idx: 5, row_idx: 1, square: "f2", rot_deg: 90 }
+  7:  { col_idx: 7, row_idx: 1, square: "h2", rot_deg: 90 }
+
+  # Hàng 3 (r_idx = 2)
+  29: { col_idx: 0, row_idx: 2, square: "a3", rot_deg: 90 }
+  9:  { col_idx: 2, row_idx: 2, square: "c3", rot_deg: 90 }
+  3:  { col_idx: 4, row_idx: 2, square: "e3", rot_deg: 90 }
+  12: { col_idx: 6, row_idx: 2, square: "g3", rot_deg: 90 }
+
+  # Hàng 4 (r_idx = 3)
+  10: { col_idx: 1, row_idx: 3, square: "b4", rot_deg: 270 }
+  14: { col_idx: 3, row_idx: 3, square: "d4", rot_deg: 90 }
+  25: { col_idx: 5, row_idx: 3, square: "f4", rot_deg: 180 }
+  32: { col_idx: 7, row_idx: 3, square: "h4", rot_deg: 270 }
+
+  # Hàng 5 (r_idx = 4)
+  13: { col_idx: 0, row_idx: 4, square: "a5", rot_deg: 180 }
+  24: { col_idx: 2, row_idx: 4, square: "c5", rot_deg: 180 }
+  30: { col_idx: 4, row_idx: 4, square: "e5", rot_deg: 180 }
+  1:  { col_idx: 6, row_idx: 4, square: "g5", rot_deg: 270 }
+
+  # Hàng 6 (r_idx = 5)
+  4:  { col_idx: 1, row_idx: 5, square: "b6", rot_deg: 180 }
+  23: { col_idx: 3, row_idx: 5, square: "d6", rot_deg: 180 }
+  37: { col_idx: 5, row_idx: 5, square: "f6", rot_deg: 0 }
+  19: { col_idx: 7, row_idx: 5, square: "h6", rot_deg: 180 }
+
+  # Hàng 7 (r_idx = 6)
+  18: { col_idx: 0, row_idx: 6, square: "a7", rot_deg: 0 }
+  11: { col_idx: 2, row_idx: 6, square: "c7", rot_deg: 270 }
+  6:  { col_idx: 4, row_idx: 6, square: "e7", rot_deg: 270 }
+  20: { col_idx: 6, row_idx: 6, square: "g7", rot_deg: 0 }
+
+  # Hàng 8 (r_idx = 7)
+  22: { col_idx: 1, row_idx: 7, square: "b8", rot_deg: 270 }
+  28: { col_idx: 3, row_idx: 7, square: "d8", rot_deg: 180 }
+  0:  { col_idx: 5, row_idx: 7, square: "f8", rot_deg: 90 }
+  2:  { col_idx: 7, row_idx: 7, square: "h8", rot_deg: 0 }

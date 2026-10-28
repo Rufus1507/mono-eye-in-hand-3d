@@ -1,0 +1,16 @@
+bang:
+  kieu: charuco
+  ten: Ban co ChArUco 8x8 A3 Vua Khit (O 35mm, Marker 28mm)
+  o_ngang: 8
+  o_doc: 8
+  canh_o_mm: 35.0
+  marker_mm: 28.0
+  ti_le_marker_tren_o: 0.8
+  tu_dien: 4X4_100
+  tong_rong_mm: 280.0
+  tong_dai_mm: 280.0
+  kho: A3
+ban_in:
+  dpi: 300
+  canh_o_mm: 35.0
+  marker_mm: 28.0

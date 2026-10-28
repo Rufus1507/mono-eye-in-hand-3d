@@ -1,0 +1,391 @@
+bang:
+  kieu: chessboard_9x6
+  ten: Ban co ChArUco 9x6 O 40mm Marker 32mm (Ho tro ca Bo 1 IDs 0-26 va Bo 2 IDs
+    50-76)
+  canh_o_mm: 40.0
+  marker_mm: 32.0
+  tu_dien: 4X4_100
+  o_ngang: 9
+  o_doc: 6
+  chieu_rong_vien_mm: 20.0
+  tong_rong_mm: 360.0
+  tong_dai_mm: 240.0
+markers:
+  0:
+    col_idx: 1
+    row_idx: 0
+    square: b1
+    x_mm: 60.0
+    y_mm: 20.0
+    rot_deg: 0
+  1:
+    col_idx: 3
+    row_idx: 0
+    square: d1
+    x_mm: 140.0
+    y_mm: 20.0
+    rot_deg: 0
+  2:
+    col_idx: 5
+    row_idx: 0
+    square: f1
+    x_mm: 220.0
+    y_mm: 20.0
+    rot_deg: 0
+  3:
+    col_idx: 7
+    row_idx: 0
+    square: h1
+    x_mm: 300.0
+    y_mm: 20.0
+    rot_deg: 0
+  4:
+    col_idx: 0
+    row_idx: 1
+    square: a2
+    x_mm: 20.0
+    y_mm: 60.0
+    rot_deg: 0
+  5:
+    col_idx: 2
+    row_idx: 1
+    square: c2
+    x_mm: 100.0
+    y_mm: 60.0
+    rot_deg: 0
+  6:
+    col_idx: 4
+    row_idx: 1
+    square: e2
+    x_mm: 180.0
+    y_mm: 60.0
+    rot_deg: 0
+  7:
+    col_idx: 6
+    row_idx: 1
+    square: g2
+    x_mm: 260.0
+    y_mm: 60.0
+    rot_deg: 0
+  8:
+    col_idx: 8
+    row_idx: 1
+    square: i2
+    x_mm: 340.0
+    y_mm: 60.0
+    rot_deg: 0
+  9:
+    col_idx: 1
+    row_idx: 2
+    square: b3
+    x_mm: 60.0
+    y_mm: 100.0
+    rot_deg: 0
+  10:
+    col_idx: 3
+    row_idx: 2
+    square: d3
+    x_mm: 140.0
+    y_mm: 100.0
+    rot_deg: 0
+  11:
+    col_idx: 5
+    row_idx: 2
+    square: f3
+    x_mm: 220.0
+    y_mm: 100.0
+    rot_deg: 0
+  12:
+    col_idx: 7
+    row_idx: 2
+    square: h3
+    x_mm: 300.0
+    y_mm: 100.0
+    rot_deg: 0
+  13:
+    col_idx: 0
+    row_idx: 3
+    square: a4
+    x_mm: 20.0
+    y_mm: 140.0
+    rot_deg: 0
+  14:
+    col_idx: 2
+    row_idx: 3
+    square: c4
+    x_mm: 100.0
+    y_mm: 140.0
+    rot_deg: 0
+  15:
+    col_idx: 4
+    row_idx: 3
+    square: e4
+    x_mm: 180.0
+    y_mm: 140.0
+    rot_deg: 0
+  16:
+    col_idx: 6
+    row_idx: 3
+    square: g4
+    x_mm: 260.0
+    y_mm: 140.0
+    rot_deg: 0
+  17:
+    col_idx: 8
+    row_idx: 3
+    square: i4
+    x_mm: 340.0
+    y_mm: 140.0
+    rot_deg: 0
+  18:
+    col_idx: 1
+    row_idx: 4
+    square: b5
+    x_mm: 60.0
+    y_mm: 180.0
+    rot_deg: 0
+  19:
+    col_idx: 3
+    row_idx: 4
+    square: d5
+    x_mm: 140.0
+    y_mm: 180.0
+    rot_deg: 0
+  20:
+    col_idx: 5
+    row_idx: 4
+    square: f5
+    x_mm: 220.0
+    y_mm: 180.0
+    rot_deg: 0
+  21:
+    col_idx: 7
+    row_idx: 4
+    square: h5
+    x_mm: 300.0
+    y_mm: 180.0
+    rot_deg: 0
+  22:
+    col_idx: 0
+    row_idx: 5
+    square: a6
+    x_mm: 20.0
+    y_mm: 220.0
+    rot_deg: 0
+  23:
+    col_idx: 2
+    row_idx: 5
+    square: c6
+    x_mm: 100.0
+    y_mm: 220.0
+    rot_deg: 0
+  24:
+    col_idx: 4
+    row_idx: 5
+    square: e6
+    x_mm: 180.0
+    y_mm: 220.0
+    rot_deg: 0
+  25:
+    col_idx: 6
+    row_idx: 5
+    square: g6
+    x_mm: 260.0
+    y_mm: 220.0
+    rot_deg: 0
+  26:
+    col_idx: 8
+    row_idx: 5
+    square: i6
+    x_mm: 340.0
+    y_mm: 220.0
+    rot_deg: 0
+  50:
+    col_idx: 1
+    row_idx: 0
+    square: b1
+    x_mm: 60.0
+    y_mm: 20.0
+    rot_deg: 0
+  51:
+    col_idx: 3
+    row_idx: 0
+    square: d1
+    x_mm: 140.0
+    y_mm: 20.0
+    rot_deg: 0
+  52:
+    col_idx: 5
+    row_idx: 0
+    square: f1
+    x_mm: 220.0
+    y_mm: 20.0
+    rot_deg: 0
+  53:
+    col_idx: 7
+    row_idx: 0
+    square: h1
+    x_mm: 300.0
+    y_mm: 20.0
+    rot_deg: 0
+  54:
+    col_idx: 0
+    row_idx: 1
+    square: a2
+    x_mm: 20.0
+    y_mm: 60.0
+    rot_deg: 0
+  55:
+    col_idx: 2
+    row_idx: 1
+    square: c2
+    x_mm: 100.0
+    y_mm: 60.0
+    rot_deg: 0
+  56:
+    col_idx: 4
+    row_idx: 1
+    square: e2
+    x_mm: 180.0
+    y_mm: 60.0
+    rot_deg: 0
+  57:
+    col_idx: 6
+    row_idx: 1
+    square: g2
+    x_mm: 260.0
+    y_mm: 60.0
+    rot_deg: 0
+  58:
+    col_idx: 8
+    row_idx: 1
+    square: i2
+    x_mm: 340.0
+    y_mm: 60.0
+    rot_deg: 0
+  59:
+    col_idx: 1
+    row_idx: 2
+    square: b3
+    x_mm: 60.0
+    y_mm: 100.0
+    rot_deg: 0
+  60:
+    col_idx: 3
+    row_idx: 2
+    square: d3
+    x_mm: 140.0
+    y_mm: 100.0
+    rot_deg: 0
+  61:
+    col_idx: 5
+    row_idx: 2
+    square: f3
+    x_mm: 220.0
+    y_mm: 100.0
+    rot_deg: 0
+  62:
+    col_idx: 7
+    row_idx: 2
+    square: h3
+    x_mm: 300.0
+    y_mm: 100.0
+    rot_deg: 0
+  63:
+    col_idx: 0
+    row_idx: 3
+    square: a4
+    x_mm: 20.0
+    y_mm: 140.0
+    rot_deg: 0
+  64:
+    col_idx: 2
+    row_idx: 3
+    square: c4
+    x_mm: 100.0
+    y_mm: 140.0
+    rot_deg: 0
+  65:
+    col_idx: 4
+    row_idx: 3
+    square: e4
+    x_mm: 180.0
+    y_mm: 140.0
+    rot_deg: 0
+  66:
+    col_idx: 6
+    row_idx: 3
+    square: g4
+    x_mm: 260.0
+    y_mm: 140.0
+    rot_deg: 0
+  67:
+    col_idx: 8
+    row_idx: 3
+    square: i4
+    x_mm: 340.0
+    y_mm: 140.0
+    rot_deg: 0
+  68:
+    col_idx: 1
+    row_idx: 4
+    square: b5
+    x_mm: 60.0
+    y_mm: 180.0
+    rot_deg: 0
+  69:
+    col_idx: 3
+    row_idx: 4
+    square: d5
+    x_mm: 140.0
+    y_mm: 180.0
+    rot_deg: 0
+  70:
+    col_idx: 5
+    row_idx: 4
+    square: f5
+    x_mm: 220.0
+    y_mm: 180.0
+    rot_deg: 0
+  71:
+    col_idx: 7
+    row_idx: 4
+    square: h5
+    x_mm: 300.0
+    y_mm: 180.0
+    rot_deg: 0
+  72:
+    col_idx: 0
+    row_idx: 5
+    square: a6
+    x_mm: 20.0
+    y_mm: 220.0
+    rot_deg: 0
+  73:
+    col_idx: 2
+    row_idx: 5
+    square: c6
+    x_mm: 100.0
+    y_mm: 220.0
+    rot_deg: 0
+  74:
+    col_idx: 4
+    row_idx: 5
+    square: e6
+    x_mm: 180.0
+    y_mm: 220.0
+    rot_deg: 0
+  75:
+    col_idx: 6
+    row_idx: 5
+    square: g6
+    x_mm: 260.0
+    y_mm: 220.0
+    rot_deg: 0
+  76:
+    col_idx: 8
+    row_idx: 5
+    square: i6
+    x_mm: 340.0
+    y_mm: 220.0
+    rot_deg: 0

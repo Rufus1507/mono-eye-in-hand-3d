@@ -220,4 +220,99 @@ class ProjectionProcessor:
         Returns:
             Danh sách các cặp (success, point_3d).
         """
+    def project_batch(
+        self,
+        pixels: Sequence[tuple[float, float] | Sequence[float] | np.ndarray],
+        pose: CameraPose,
+    ) -> list[tuple[bool, Optional[np.ndarray]]]:
+        """Chiếu một danh sách các điểm ảnh sang 3D.
+
+        Args:
+            pixels: Danh sách các tọa độ (u, v).
+            pose: CameraPose của khung hình hiện tại.
+
+        Returns:
+            Danh sách các cặp (success, point_3d).
+        """
         return [self.project(p, pose) for p in pixels]
+
+    def compute_piece_height(
+        self,
+        bottom_px: tuple[float, float] | Sequence[float] | np.ndarray,
+        top_px: tuple[float, float] | Sequence[float] | np.ndarray,
+        pose: CameraPose,
+        base_3d: Optional[np.ndarray] = None,
+    ) -> Optional[float]:
+        """Tính chiều cao quân cờ (mm) từ đáy và đỉnh bounding box trong không gian 3D.
+
+        Quy trình cho góc nhìn camera không cố định (di chuyển tùy biến):
+        1. Xác định vị trí chân đế (X_base, Y_base, 0) trên mặt bàn Z = plane_z.
+        2. Tính vector tia 3D xuất phát từ tâm camera C qua pixel đỉnh top_px.
+        3. Giao cắt tia đỉnh với trục thẳng đứng tại (X_base, Y_base) để suy ra chiều cao H (mm).
+
+        Args:
+            bottom_px: (u, v) pixel của đáy bounding box.
+            top_px: (u, v) pixel của đỉnh bounding box.
+            pose: CameraPose hợp lệ của khung hình.
+            base_3d: Tọa độ 3D chân đế (tùy chọn).
+
+        Returns:
+            Chiều cao quân cờ tính bằng mm hoặc None nếu không hợp lệ.
+        """
+        if not pose.valid or pose.rvec is None or pose.tvec is None:
+            return None
+
+        # 1. Xác định vị trí chân đế 3D
+        if base_3d is not None and not np.isnan(base_3d).any():
+            p_base = np.asarray(base_3d, dtype=np.float64)
+        else:
+            success_b, p_base = self.project(bottom_px, pose)
+            if not success_b or p_base is None:
+                return None
+
+        # 2. Tâm camera trong hệ tọa độ thế giới
+        R, _ = cv2.Rodrigues(pose.rvec)
+        C = -R.T @ pose.tvec.flatten()
+
+        # 3. Vector hướng tia từ camera qua top_px trong hệ tọa độ thế giới
+        top_undist = undistort_pixel(top_px, self.K, self.dist)
+        ray_cam = pixel_to_ray(top_undist, self.K)
+        ray_world = R.T @ ray_cam
+        norm = np.linalg.norm(ray_world)
+        if norm <= 1e-7:
+            return None
+        v = ray_world / norm
+
+        # 4. Giao tia đỉnh với trục đứng đi qua (X_base, Y_base)
+        # Trong mặt phẳng XY: C_xy + t * v_xy = P_base_xy
+        v_xy_sq = v[0] ** 2 + v[1] ** 2
+        if v_xy_sq < 1e-6:
+            return None
+
+        dx = p_base[0] - C[0]
+        dy = p_base[1] - C[1]
+        t = (dx * v[0] + dy * v[1]) / v_xy_sq
+
+        if t <= 0:
+            return None
+
+        # Chiều cao Z tại điểm giao cắt
+        h_raw = float(C[2] + t * v[2] - self.plane_z)
+        cam_dir_z = 1.0 if (C[2] - self.plane_z) >= 0 else -1.0
+        h_est = h_raw * cam_dir_z
+
+        # Kiểm tra ngưỡng vật lý hợp lý (quân cờ thường từ 15mm đến 120mm)
+        if 15.0 <= h_est <= 120.0:
+            return round(h_est, 1)
+
+        # Fallback nếu góc chiếu quá xiên
+        success_t, p_top = self.project(top_px, pose)
+        if success_t and p_top is not None:
+            fallback_h = float(np.linalg.norm(p_top - p_base))
+            if 15.0 <= fallback_h <= 120.0:
+                return round(fallback_h, 1)
+
+        if h_est > 0:
+            return round(max(15.0, min(h_est, 100.0)), 1)
+        return None
+

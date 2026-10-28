@@ -3,14 +3,17 @@
 
 bang:
   kieu: chessboard_8x8
-  ten: "Ban co 8x8 ArUco 40mm (Tong the 320mm)"
+  ten: "Ban co 8x8 ArUco 40mm (Marker 32mm, Vien 20mm)"
   o_ngang: 8
   o_doc: 8
   canh_o_mm: 40.0
-  marker_mm: 24.0
+  chieu_rong_vien_mm: 20.0
+  marker_mm: 32.0
   tu_dien: 4X4_50
   tong_rong_mm: 320.0
   tong_dai_mm: 320.0
+  tong_rong_ca_vien_mm: 360.0
+  tong_dai_ca_vien_mm: 360.0
 
 # Hệ tọa độ chuẩn cờ vua (Standard Chess World Frame):
 # Gốc tọa độ O(0, 0, 0) tại góc dưới-trái (mép ngoài ô A1):

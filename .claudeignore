@@ -1,0 +1,12 @@
+gender_3d/
+videochess/
+results/
+archive_boards/
+*.obj
+*.blend
+*.stl
+*.fbx
+*.x3d
+*.mp4
+.venv/
+__pycache__/

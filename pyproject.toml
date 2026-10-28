@@ -19,6 +19,7 @@ dev = ["pytest"]
 detect = ["ultralytics"]                          # stage 5: YOLO
 viz = ["rerun-sdk"]                               # stage 6: 3D viewer
 analysis = ["pandas", "matplotlib", "scipy"]      # stages 7-8
+viewer = ["moderngl>=5.10,<6", "glfw>=2.6,<3"]
 
 [tool.uv]
 default-groups = ["dev"]

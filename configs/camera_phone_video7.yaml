@@ -1,0 +1,18 @@
+%YAML:1.0
+---
+image_width: 1920
+image_height: 1080
+camera_matrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 1348.7, 0., 990.5, 0.,
+       1353.3, 587.2, 0., 0., 1. ]
+distortion_coefficients: !!opencv-matrix
+   rows: 1
+   cols: 5
+   dt: d
+   data: [ 0.00515893, 0.16546489,
+       0.00957799, 0.00681648, -0.81679214 ]
+distortion_model: opencv k1 k2 p1 p2 k3
+rms_px: 1.133

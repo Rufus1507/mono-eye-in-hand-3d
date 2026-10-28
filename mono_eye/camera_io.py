@@ -15,6 +15,10 @@ class CameraModel:
     width: int
     height: int
 
+    @property
+    def camera_matrix(self) -> np.ndarray:
+        return self.K
+
     def check_frame(self, frame: np.ndarray) -> None:
         """Từ chối khung hình có độ phân giải khác lúc hiệu chuẩn (K chỉ đúng cho chế độ đó)."""
         h, w = frame.shape[:2]
